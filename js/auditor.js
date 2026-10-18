@@ -82,7 +82,6 @@ export class Auditor {
     const lines = fullNoteText.split(/\r\n|\n/);
     const isDecimalNoted = fullNoteText.toLowerCase().includes("decimal");
 
-
     const enumLineRegex =
       /^([.+\s|]*)(Bit\s*\d+|0x[0-9a-f]+|(?=[0-9a-f]*[a-f])[0-9a-f]{2,}\b|-?\d+(?:\.\d+)?)\s*([:=|>-]{1,2})\s*(.+)$/i;
 
