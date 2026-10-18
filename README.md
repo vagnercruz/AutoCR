@@ -69,11 +69,12 @@ http://localhost:8080?middleware=http://localhost:3000
 
 ## Local Checks
 
-_test/_ exists, but for now, all testing is local fixtures. [oxfmt](https://oxc.rs/docs/guide/usage/formatter) is used for formatting, and [oxlint](https://oxc.rs/docs/guide/usage/linter) is used for linting.
+Unit tests live in _test/_ (alongside sample fixtures) and run with `bun test`. [oxfmt](https://oxc.rs/docs/guide/usage/formatter) is used for formatting, and [oxlint](https://oxc.rs/docs/guide/usage/linter) is used for linting.
 
 ```shell
 bun run format    # autoformat all files
 bun run lint:fix  # apply linting autofixes
+bun run test      # run unit tests
 ```
 
 ## Deployment

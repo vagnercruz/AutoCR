@@ -24,15 +24,12 @@ export class Auditor {
     const issues = [];
     const header = headerText.trim();
 
-    // Extrai tudo o que estiver dentro de colchetes na primeira linha
     const bracketMatches = [...header.matchAll(/\[(.*?)\]/g)];
     let hasValidSizeBracket = false;
 
-    // Padrões de tamanho base permitidos pela documentação
     const validSizeRegex =
-      /^(\d+-bit(?: BE)?(?: BCD)?(?: BE BCD)?|Float(?: BE)?|\d+x\d+ bytes?|\d+ bytes?|Lower4|Upper4|ASCII|General game notes)$/i;
+      /^(\d+-bit(?: BE)?(?: BCD)?|Float(?: BE)?|\d+x\d+ bytes?|\d+ bytes?|Lower4|Upper4|ASCII|General game notes)$/i;
 
-    // Padrões de metadados permitidos como tags secundárias independentes
     const validMetadataRegex = /^(JP|EU|EUR|US|USA|EUA|ALL|World|BCD|BE)$/i;
 
     for (const match of bracketMatches) {
@@ -47,7 +44,7 @@ export class Auditor {
       } else if (validSizeRegex.test(innerText)) {
         hasValidSizeBracket = true;
       } else if (validMetadataRegex.test(innerText)) {
-        // É um metadado válido (região, BCD separado ou BE separado), deixa passar sem erro
+        // valid modifier (region, standalone BCD or BE)
       } else {
         issues.push({
           level: "ERROR",
@@ -66,13 +63,10 @@ export class Auditor {
       return issues;
     }
 
-    // Remove as tags para avaliar apenas a descrição limpa
+    // Strip the tags so only the description is evaluated
     const description = header.replaceAll(/\[.*?\]/g, "").trim();
 
-    if (
-      description.length <= 3 ||
-      (/^[\w]+$/.test(description) && description.toLowerCase() === "test")
-    ) {
+    if (description.length <= 3 || description.toLowerCase() === "test") {
       issues.push({
         level: "WARNING",
         rule: "VAGUE_DESCRIPTION",
@@ -88,11 +82,10 @@ export class Auditor {
     const lines = fullNoteText.split(/\r\n|\n/);
     const isDecimalNoted = fullNoteText.toLowerCase().includes("decimal");
 
-    // Captura o prefixo estrutural, o valor e o separador usado
-    const enumLineRegex =
-      /^([.+\s|]*)(0x[0-9a-fA-F]+|-?\d+(?:\.\d+)?|Bit\s*\d+)\s*([:=|-]{1,2})\s*(.+)$/i;
 
-    // Inicia em 1 para ignorar a linha do cabeçalho
+    const enumLineRegex =
+      /^([.+\s|]*)(Bit\s*\d+|0x[0-9a-f]+|(?=[0-9a-f]*[a-f])[0-9a-f]{2,}\b|-?\d+(?:\.\d+)?)\s*([:=|>-]{1,2})\s*(.+)$/i;
+
     for (let i = 1; i < lines.length; i++) {
       const line = lines[i].trim();
       if (!line) {
@@ -104,7 +97,6 @@ export class Auditor {
         const literal = match[2];
         const separator = match[3];
 
-        // Validação do separador obrigatório "="
         if (separator !== "=") {
           issues.push({
             level: "ERROR",
@@ -113,7 +105,6 @@ export class Auditor {
           });
         }
 
-        // Validação rigorosa de bits
         const bitMatch = literal.match(/^Bit\s*(\d+)$/i);
         if (bitMatch) {
           const bitNum = Number.parseInt(bitMatch[1], 10);
@@ -124,17 +115,14 @@ export class Auditor {
               message: `Treat consecutive bitfields as stand alone 8-bit addresses. Do not note anything as Bit${bitNum}. Use Bit0 through Bit7.`,
             });
           }
-        } else {
-          // Validação do prefixo Hexadecimal
-          if (!literal.toLowerCase().startsWith("0x") && !literal.includes(".")) {
-            const containsHexChars = /[a-f]/i.test(literal);
-            if (containsHexChars || !isDecimalNoted) {
-              issues.push({
-                level: "WARNING",
-                rule: "HEX_PREFIX_MISSING",
-                message: `The value "${literal}" should be prefixed with '0x' if it is hexadecimal, or the note should specify that values are in decimal.`,
-              });
-            }
+        } else if (!literal.toLowerCase().startsWith("0x") && !literal.includes(".")) {
+          const containsHexChars = /[a-f]/i.test(literal);
+          if (containsHexChars || !isDecimalNoted) {
+            issues.push({
+              level: "WARNING",
+              rule: "HEX_PREFIX_MISSING",
+              message: `The value "${literal}" should be prefixed with '0x' if it is hexadecimal, or the note should specify that values are in decimal.`,
+            });
           }
         }
       }
