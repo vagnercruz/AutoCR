@@ -1,4 +1,4 @@
-class Auditor {
+export class Auditor {
     /**
      * Analyzes a CodeNote instance and returns a list of QA issues.
      * @param {CodeNote} codeNote 

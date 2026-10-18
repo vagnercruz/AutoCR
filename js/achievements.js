@@ -1,3 +1,5 @@
+import { Logic, FormatType, FormatTypeMap, MemSize } from "./logic";
+
 class MemRegion
 {
 	start;
@@ -157,7 +159,7 @@ const ConsoleMap = Object.fromEntries(
 	Object.entries(Console).map(([k, v]) => [v.id, v])
 );
 
-const AssetState = Object.freeze({
+export const AssetState = Object.freeze({
 	CORE: { rank: 0, name: 'core', marker: '', },
 	UNOFFICIAL: { rank: 1, name: 'unofficial', marker: '🚧 '},
 	LOCAL: { rank: 2, name: 'local', marker: '✏️ '},
@@ -192,7 +194,7 @@ class Asset
 	toRefString(){ return `asset-${this.#ref}`; }
 }
 
-class Achievement extends Asset
+export class Achievement extends Asset
 {
 	points = 5;
 	achtype = "";
@@ -244,7 +246,7 @@ class Achievement extends Asset
 	}
 }
 
-class Leaderboard extends Asset
+export class Leaderboard extends Asset
 {
 	static COMPONENT_TAGS = ['STA', 'CAN', 'SUB', 'VAL'];
 
@@ -315,7 +317,7 @@ class Leaderboard extends Asset
 	}
 }
 
-class AchievementSet
+export class AchievementSet
 {
 	id;
 	title = null;
@@ -637,7 +639,7 @@ class PointerTreeParser
 	}
 }
 
-class CodeNote
+export class CodeNote
 {
 	addr;
 	size = 1;
@@ -894,7 +896,7 @@ class CodeNote
 	}
 }
 
-class CodeNoteSet extends Array
+export class CodeNoteSet extends Array
 {
 	clear() { this.length = 0; }
 
@@ -1023,64 +1025,6 @@ class CodeNoteSet extends Array
 		}
 
 		return null;
-	}
-
-	static find_relevant_note_text(full_note, offsets) {
-		let lines = full_note.split(/\r\n|\n/);
-		let current_search_space = lines;
-		let last_found_block = lines; 
-
-		if (offsets.length === 0) {
-			return last_found_block.join('\n');
-		}
-
-		const offset_line_re = /^([.\+\s\u2500-\u257F]*)\+0x([a-f0-9]+)(.*)$/i;
-		let context_indentation = -1;
-
-		for (const target_offset of offsets) {
-			let best_match = { index: -1, indent: Infinity };
-
-			for (let i = 0; i < current_search_space.length; i++) {
-				const line = current_search_space[i];
-				const match = line.match(offset_line_re);
-
-				if (match) {
-					const current_indentation = (match[1] || '').length;
-					const line_offset_val = parseInt(match[2], 16);
-
-					if (line_offset_val === target_offset && current_indentation > context_indentation) {
-						if (current_indentation < best_match.indent) {
-							best_match = { index: i, indent: current_indentation };
-						}
-					}
-				}
-			}
-
-			if (best_match.index === -1) return null;
-
-			const start_index = best_match.index;
-			const start_indentation = best_match.indent;
-			let end_of_block_index = start_index + 1;
-
-			while (end_of_block_index < current_search_space.length) {
-				const next_line = current_search_space[end_of_block_index];
-				const next_match = next_line.match(offset_line_re);
-				if (next_match) {
-					const next_indentation = (next_match[1] || '').length;
-					if (next_indentation <= start_indentation) {
-						break; 
-					}
-				}
-				end_of_block_index++;
-			}
-
-			const found_block = current_search_space.slice(start_index, end_of_block_index);
-			last_found_block = found_block;
-			current_search_space = found_block;
-			context_indentation = start_indentation;
-		}
-		
-		return last_found_block.join('\n');
 	}
 }
 
@@ -1291,10 +1235,9 @@ class LookupRange
 		this.end = end;
 		this.value = value;
 	}
-	isFallback() { return this.start == null && this.end == null; }
 }
 
-class RichPresence
+export class RichPresence
 {
 	text = "";
 	

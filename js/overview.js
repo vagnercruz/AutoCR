@@ -1,8 +1,20 @@
-const sidebar = ReactDOM.createRoot(document.getElementById('list-body'));
-const container = ReactDOM.createRoot(document.getElementById('info-container'));
+import { createRoot } from 'react-dom/client';
+import { createPortal } from 'react-dom'
+import { useEffect, useState, useRef, useLayoutEffect, useMemo, Fragment } from 'react';
+import { Achievement, AchievementSet, CodeNoteSet, RichPresence, CodeNote, AssetState, Leaderboard } from './achievements';
+import { assess_code_notes, assess_achievement, assess_leaderboard, assess_rich_presence, assess_set, SEVERITY_TO_CLASS, Feedback, FeedbackSeverity, toDisplayHex } from './feedback';
+import { Logic, ReqFlag, ConditionFormatter, ReqType, MemSize } from './logic';
+import { LogicExplainer } from './explainer';
+import { Auditor } from './auditor';
+import { current, get_game_title } from './state';
+
+const sidebar = createRoot(document.getElementById('list-body'));
+const container = createRoot(document.getElementById('info-container'));
 const filePicker = document.getElementById('file-picker');
 
-var current = { id: -1, };
+// You can point to your own local middleware with ?middleware=http://localhost:3000.
+const MIDDLEWARE_URL = (new URLSearchParams(location.search).get('middleware')
+	?? 'https://autocr-tools.vercel.app').replace(/\/+$/, '');
 
 function clearSelected()
 {
@@ -32,7 +44,7 @@ function reset_loaded()
 }
 
 document.getElementById('unload-set').addEventListener('click', () => {
-	history.pushState(null, '', location.pathname);
+	history.pushState(null, '', location.pathname + location.search);
 	location.reload();
 });
 
@@ -125,12 +137,6 @@ function load_files(fileList)
 			};
 		reader.readAsText(file);
 	}
-}
-
-function get_game_title()
-{
-	if (current.set) return current.set.title;
-	return null;
 }
 
 async function copy_to_clipboard(text)
@@ -229,10 +235,10 @@ const TooltipManager = {
 };
 
 function GlobalTooltip() {
-	const [state, setState] = React.useState(TooltipManager.state);
+	const [state, setState] = useState(TooltipManager.state);
 	
 	// Default to hidden so it measures before showing
-	const [layout, setLayout] = React.useState({ 
+	const [layout, setLayout] = useState({ 
 		top: 0, 
 		left: 0, 
 		opacity: 0,
@@ -240,14 +246,14 @@ function GlobalTooltip() {
 		arrowOffset: 0
 	});
 
-	const tooltipRef = React.useRef(null);
+	const tooltipRef = useRef(null);
 
-	React.useEffect(() => {
+	useEffect(() => {
 		return TooltipManager.subscribe(setState);
 	}, []);
 
 	// Perform measurement and positioning whenever content or target changes
-	React.useLayoutEffect(() => {
+	useLayoutEffect(() => {
 		if (!state.visible || !state.targetRect || !tooltipRef.current) return;
 
 		const target = state.targetRect;
@@ -313,7 +319,7 @@ function GlobalTooltip() {
 
 	if (!state.visible || !state.content) return null;
 
-	return ReactDOM.createPortal(
+	return createPortal(
 		<div 
 			id="global-tooltip-container" 
 			ref={tooltipRef}
@@ -370,11 +376,11 @@ function OperandCells({operand, skipNote = false, chainInfo = [], showAliases = 
 			if (!displayValue) {
 				let memaddr = operand.toValueString();
 				if (chainInfo.length) memaddr = (
-					<React.Fragment>
+					<Fragment>
 						<span className="AddAddressIndicator">[+</span>
 						{memaddr}
 						<span className="AddAddressIndicator">]</span>
-					</React.Fragment>);
+					</Fragment>);
 				displayValue = memaddr;
 			}
 			
@@ -501,7 +507,7 @@ function LogicGroup({group, gi, logic, issues, showAliases, collapseAddAddress})
 
 			return (<tr key={`g${gi}-r${ri}`} id={req.toRefString()} className={`${match.some(([_, issue]) => issue.severity >= FeedbackSeverity.FAIL) ? 'warn' : ''} ${flagClass}`}>
 				<td>{ri + 1} {match.map(([ndx, _]) => 
-					<React.Fragment key={ndx}>{' '} <sup key={ndx}>(#{ndx+1})</sup></React.Fragment>)}</td>
+					<Fragment key={ndx}>{' '} <sup key={ndx}>(#{ndx+1})</sup></Fragment>)}</td>
 				<td>{req.flag ? req.flag.name : ''}</td>
 				
 				{/* LHS: Pass group/rowIndex for pointer resolving */}
@@ -538,9 +544,9 @@ function LogicTable({logic, issues = [], isHex = null, toggleHex = null})
 {
 	// Preferences
 	// Uncontrolled mode fallback
-	const [internalIsHex, setInternalIsHex] = React.useState(() => localStorage.getItem('pref-isHex') === 'true');
-	const [collapseAddAddress, setCollapseAddAddress] = React.useState(() => localStorage.getItem('pref-collapseAddAddress') === 'true');
-	const [showAliases, setShowAliases] = React.useState(() => localStorage.getItem('pref-showAliases') === 'true');
+	const [internalIsHex, setInternalIsHex] = useState(() => localStorage.getItem('pref-isHex') === 'true');
+	const [collapseAddAddress, setCollapseAddAddress] = useState(() => localStorage.getItem('pref-collapseAddAddress') === 'true');
+	const [showAliases, setShowAliases] = useState(() => localStorage.getItem('pref-showAliases') === 'true');
 
 	// Determine effective hex state
 	const effectiveIsHex = (isHex !== null && isHex !== undefined) ? isHex : internalIsHex;
@@ -614,7 +620,7 @@ function KeywordList({list, sorted = true})
 	list = [...list];
 	if (list.length == 0) return <>None</>;
 	if (sorted) list.sort();
-	return (<>{list.map((x, i) => (<React.Fragment key={x}>{i == 0 ? '' : ', '} <code>{x}</code></React.Fragment>))}</>);
+	return (<>{list.map((x, i) => (<Fragment key={x}>{i == 0 ? '' : ', '} <code>{x}</code></Fragment>))}</>);
 }
 
 function LogicStats({logic, stats = {}})
@@ -652,7 +658,7 @@ function LogicStats({logic, stats = {}})
 			<li>Unique Mem Sizes: ({stats.unique_sizes.size}) <KeywordList list={[...stats.unique_sizes].map(x => x.name)} /></li>
 			<li>Unique Comparisons: ({stats.unique_cmps.size}) <KeywordList list={[...stats.unique_cmps]} /></li>
 			<li>Source Modifications: {[...stats.source_modification.entries()].filter(([_, c]) => c > 0).map(([op, c], i) => 
-				(<React.Fragment key={op}>{i == 0 ? '' : ', '} <code>{op}</code> ({c})</React.Fragment>))}</li>
+				(<Fragment key={op}>{i == 0 ? '' : ', '} <code>{op}</code> ({c})</Fragment>))}</li>
 		</ul>
 		<LogicOnlyStats />
 	</ul>);
@@ -667,9 +673,9 @@ function IssueList({issues = []})
 				let ctarget = typeof issue.target == 'string' ? `asset-${issue.target}` : issue.target?.toRefString();
 				if (ctarget) scrollTo(document.getElementById(ctarget));
 			}}>#{i+1}</a>)</sup> {issue.type.desc}
-			{issue.type.ref.map((ref, i) => <React.Fragment key={i}>
+			{issue.type.ref.map((ref, i) => <Fragment key={i}>
 				<sup key={ref}>[<a href={ref}>ref</a>]</sup>
-			</React.Fragment>)}
+			</Fragment>)}
 			{issue.detail}
 		</li>
 	))}</ul>);
@@ -750,7 +756,7 @@ function AssetCard({asset, warn})
 function CollapsibleExplainer({ title = "Logic Analysis", children })
 {
 	// Load state from localStorage, default to true if not set
-	const [isOpen, setIsOpen] = React.useState(() => {
+	const [isOpen, setIsOpen] = useState(() => {
 		const saved = localStorage.getItem('pref-showExplainer');
 		return saved === null ? true : saved === 'true';
 	});
@@ -805,7 +811,7 @@ function AchievementInfo({ach}) {
 	let feedback = ach.feedback;
 	let feedback_targets = new Set([].concat(...feedback.issues).map(x => x.target));
 
-	const [isHex, setIsHex] = React.useState(() => localStorage.getItem('pref-isHex') === 'true');
+	const [isHex, setIsHex] = useState(() => localStorage.getItem('pref-isHex') === 'true');
 	const toggleHex = () => {
 		const newVal = !isHex;
 		setIsHex(newVal);
@@ -890,7 +896,7 @@ function LeaderboardInfo({lb}) {
 	let feedback = lb.feedback;
 	let feedback_targets = new Set([].concat(...feedback.issues).map(x => x.target));
 
-	const [isHex, setIsHex] = React.useState(() => localStorage.getItem('pref-isHex') === 'true');
+	const [isHex, setIsHex] = useState(() => localStorage.getItem('pref-isHex') === 'true');
 	const toggleHex = () => {
 		const newVal = !isHex;
 		setIsHex(newVal);
@@ -902,13 +908,13 @@ function LeaderboardInfo({lb}) {
 	function LeaderboardComponentStats() {
 		function SectionStats({ block = null }) {
 			const tag = block.substring(0, 3);
-			return (<React.Fragment>
+			return (<Fragment>
 				<h2>{block}</h2>
 				<LogicStats logic={lb.components[tag]} stats={feedback.stats[tag]} />
-			</React.Fragment>);
+			</Fragment>);
 		}
 
-		const [blockContents, setContents] = React.useState(<SectionStats block="START" />);
+		const [blockContents, setContents] = useState(<SectionStats block="START" />);
 		return (<div>
 			<div>
 				{COMPONENTS.map(b => <button key={b} onClick={() => {
@@ -952,10 +958,10 @@ function LeaderboardInfo({lb}) {
 		</CollapsibleExplainer>
 
 		<div className="data-table">
-			{COMPONENTS.map(block => <React.Fragment key={block}>
+			{COMPONENTS.map(block => <Fragment key={block}>
 				<h3>{block}</h3>
 				<LogicTable logic={lb.components[block.substring(0, 3)]} issues={feedback.issues} isHex={isHex} toggleHex={toggleHex} />
-			</React.Fragment>)}
+			</Fragment>)}
 		</div>
 		<div className="stats">
 			<h1>Statistics</h1>
@@ -973,8 +979,8 @@ function LeaderboardInfo({lb}) {
 
 function ChartCanvas({ setup })
 {
-	let graph = React.useRef();
-	React.useEffect(() => { setup(graph.current) }, []);
+	let graph = useRef();
+	useEffect(() => { setup(graph.current) }, []);
 	return (<canvas ref={graph} />);
 }
 
@@ -1007,12 +1013,12 @@ function AchievementSetOverview()
 						<summary>Missing code notes: {setstats.missing_notes.size} (click to expand)</summary>
 						<ul>
 							{[...setstats.missing_notes.entries()].sort(([a, _1], [b, _2]) => a - b)
-								.map(([addr, loc]) => <React.Fragment key={addr}>
+								.map(([addr, loc]) => <Fragment key={addr}>
 									<li><code>{toDisplayHex(addr)}</code></li>
 									<ul>
 										{loc.map((x, i) => <li key={i}>used in {x}</li>)}
 									</ul>
-								</React.Fragment>)}
+								</Fragment>)}
 						</ul>
 					</details>
 				</li>
@@ -1553,10 +1559,10 @@ function CodeNotesOverview()
 	const stats = feedback.stats;
 
 	let authors = new Set(current.notes.map(note => note.author));
-	const [authState, setAuthState] = React.useState(Object.fromEntries([...authors].map(a => [a, true])));
-	const [warnsOnly, setWarnsOnly] = React.useState(false);
-	const [hideUnused, setHideUnused] = React.useState(false);
-	const [hideUsed, setHideUsed] = React.useState(false);
+	const [authState, setAuthState] = useState(Object.fromEntries([...authors].map(a => [a, true])));
+	const [warnsOnly, setWarnsOnly] = useState(false);
+	const [hideUnused, setHideUnused] = useState(false);
+	const [hideUsed, setHideUsed] = useState(false);
 
 	let displaynotes = current.notes.filter(note => authState[note.author]);
 	if (warnsOnly) displaynotes = displaynotes.filter(note => feedback_targets.has(note))
@@ -1576,13 +1582,13 @@ function CodeNotesOverview()
 			<ul className="list-inside">
 				<li>
 					<a href={`https://retroachievements.org/codenotes.php?g=${current.id}`}>{current.notes.length} code notes</a> <></>
-						by {authors.size} author(s): {[...authors].map((name, i) => <React.Fragment key={name}>{i > 0 ? ' | ' : ''} 
+						by {authors.size} author(s): {[...authors].map((name, i) => <Fragment key={name}>{i > 0 ? ' | ' : ''} 
 						<span>
 							<input type="checkbox" defaultChecked onChange={(e) => {
 								setAuthState(Object.assign({}, authState, {[name]: e.currentTarget.checked}));
 							}} /> <a href={`https://retroachievements.org/user/${name}`}>{name}</a>
 						</span>
-					</React.Fragment>)}
+					</Fragment>)}
 				</li>
 				<li>
 					<label htmlFor="warnsOnly">Only show warnings</label><input id="warnsOnly" type="checkbox" onChange={(e) => {
@@ -1670,8 +1676,8 @@ function HighlightedRichPresence({script, onLogicSelected = null})
 {
 	if (!script) return null;
 
-	let ref = React.useRef();
-	React.useEffect(() => {
+	let ref = useRef();
+	useEffect(() => {
 		let root = ref.current;
 		for (let elt of root.querySelectorAll('.link'))
 			elt.onclick = (x) => { document.getElementById(`def-${elt.innerText}`).scrollIntoView({behavior: 'smooth', block: 'nearest'}); }
@@ -1769,11 +1775,11 @@ function getFormattedPreview(ds, script) {
 }
 
 function RARPLivePreview({ script, displayString }) {
-	const [tick, setTick] = React.useState(0);
-	const [score, setScore] = React.useState(() => Math.floor(Math.random() * 10000));
-	const lookupCache = React.useRef({});
+	const [tick, setTick] = useState(0);
+	const [score, setScore] = useState(() => Math.floor(Math.random() * 10000));
+	const lookupCache = useRef({});
 
-	React.useEffect(() => {
+	useEffect(() => {
 		const timer = setInterval(() => {
 			setTick(t => t + 1);
 			setScore(s => Math.max(0, s + Math.floor(Math.random() * 101) - 50));
@@ -1815,7 +1821,7 @@ function RARPLivePreview({ script, displayString }) {
 }
 
 function RARPTreeView({ script, selectedItem, setSelectedItem, dsSeverities, lookupSeverities, formatterSeverities, sidebarWidth }) {
-	const [expanded, setExpanded] = React.useState({ lookups: true, formatters: true, display: true });
+	const [expanded, setExpanded] = useState({ lookups: true, formatters: true, display: true });
 	const toggle = (cat) => setExpanded(prev => ({ ...prev, [cat]: !prev[cat] }));
 
 	const formatters = script.scriptLookups.filter(l => l.entries.length === 0 && l.defaultVal === null);
@@ -1905,10 +1911,10 @@ function RARPDisplayEditor({ ds, isHex, toggleHex, selectedItem, setSelectedItem
 	const macroNames = [...new Set(macros.map(m => m.text))];
 
 	// Resizer state for the top row panels
-	const [templateWidth, setTemplateWidth] = React.useState(55); // percentage
-	const [isDragging, setIsDragging] = React.useState(false);
+	const [templateWidth, setTemplateWidth] = useState(55); // percentage
+	const [isDragging, setIsDragging] = useState(false);
 
-	React.useEffect(() => {
+	useEffect(() => {
 		const handleMouseMove = (e) => {
 			if (!isDragging) return;
 			// Estimate percentage based on window width minus sidebar
@@ -2076,17 +2082,17 @@ function RPAssetFeedback({ issues, onIssueClick }) {
 		<h1>Feedback</h1>
 		{issues.map((group, i) => {
 			if (!group || group.length === 0) return null;
-			return (<React.Fragment key={i}>
+			return (<Fragment key={i}>
 				<h2>{group.label}</h2>
 				<ul>{group.map((issue, j) => (
 					<li key={j}>
 						{issue.target ? <sup>(<a href="#" onClick={(e) => { e.preventDefault(); onIssueClick(issue); }}>#{j+1}</a>)</sup> : null}
 						{' '}{issue.type.desc}
-						{issue.type.ref.map((r, k) => <React.Fragment key={k}><sup key={r}>[<a href={r} target="_blank">ref</a>]</sup></React.Fragment>)}
+						{issue.type.ref.map((r, k) => <Fragment key={k}><sup key={r}>[<a href={r} target="_blank">ref</a>]</sup></Fragment>)}
 						{issue.detail}
 					</li>
 				))}</ul>
-			</React.Fragment>);
+			</Fragment>);
 		})}
 	</div>);
 }
@@ -2095,15 +2101,15 @@ function RichPresenceOverview() {
 	const feedback = current.rp.feedback;
 	const script = current.rp;
 	
-	const [viewMode, setViewMode] = React.useState(() => localStorage.getItem('pref-rpViewMode') || 'rarp');
-	const [selectedItem, setSelectedItem] = React.useState({ type: 'display', index: 0, macro: 'Condition' });
-	const [logicData, setLogicData] = React.useState(null); 
+	const [viewMode, setViewMode] = useState(() => localStorage.getItem('pref-rpViewMode') || 'rarp');
+	const [selectedItem, setSelectedItem] = useState({ type: 'display', index: 0, macro: 'Condition' });
+	const [logicData, setLogicData] = useState(null); 
 	
 	// Splitter State for RP UI Sidebar
-	const [sidebarWidth, setSidebarWidth] = React.useState(350);
-	const [isDraggingSidebar, setIsDraggingSidebar] = React.useState(false);
+	const [sidebarWidth, setSidebarWidth] = useState(350);
+	const [isDraggingSidebar, setIsDraggingSidebar] = useState(false);
 	
-	const [isHex, setIsHex] = React.useState(() => localStorage.getItem('pref-isHex') === 'true');
+	const [isHex, setIsHex] = useState(() => localStorage.getItem('pref-isHex') === 'true');
 	const toggleHex = () => {
 		const newVal = !isHex;
 		setIsHex(newVal);
@@ -2117,7 +2123,7 @@ function RichPresenceOverview() {
 	};
 
 	// Global mouse events for RP sidebar splitter
-	React.useEffect(() => {
+	useEffect(() => {
 		const handleMouseMove = (e) => {
 			if (!isDraggingSidebar) return;
 			const rarpLayout = document.querySelector('.rarp-layout');
@@ -2147,7 +2153,7 @@ function RichPresenceOverview() {
 		};
 	}, [isDraggingSidebar]);
 
-	const reqToNav = React.useMemo(() => {
+	const reqToNav = useMemo(() => {
 		const map = {};
 		script.displayStrings.forEach((ds, dsIndex) => {
 			map[ds.toRefString()] = { type: 'display', index: dsIndex, macro: 'Condition' };
@@ -2177,7 +2183,7 @@ function RichPresenceOverview() {
 		return map;
 	}, [script]);
 
-	const { dsSeverities, lookupSeverities, formatterSeverities } = React.useMemo(() => {
+	const { dsSeverities, lookupSeverities, formatterSeverities } = useMemo(() => {
 		const dsSev = script.displayStrings.map(() => 0);
 		const formatters = script.scriptLookups.filter(x => x.entries.length === 0 && x.defaultVal === null);
 		const lookups = script.scriptLookups.filter(x => x.entries.length > 0 || x.defaultVal !== null);
@@ -2414,7 +2420,7 @@ function AchievementTabs()
 	let archived = current.set.getArchivedAchievements ? current.set.getArchivedAchievements() : [];
 	
 	// Estado do React para controlar se a sanfona está aberta ou fechada
-	const [showArchived, setShowArchived] = React.useState(false);
+	const [showArchived, setShowArchived] = useState(false);
 
 	if (achievements.length == 0 && archived.length == 0) return null;
 
@@ -2504,7 +2510,7 @@ function LeaderboardTabs()
 
 function SidebarTabs()
 {
-	React.useEffect(route_change);
+	useEffect(route_change);
 
 	return (<>
 		<SetOverviewTab />
@@ -2519,10 +2525,10 @@ function SidebarTabs()
 function show_overview(e, node)
 {
 	container.render(
-		<React.Fragment>
+		<Fragment>
 			<GlobalTooltip />
 			{node}
-		</React.Fragment>
+		</Fragment>
 	);
 	selectTab(e.currentTarget);
 
@@ -2736,7 +2742,7 @@ function main(event)
 				
 				reset_loaded();
 				document.getElementById("loading-overlay").classList.add('shown');
-				fetch('https://autocr-tools.vercel.app/pack/' + parts[2])
+				fetch(`${MIDDLEWARE_URL}/pack/${parts[2]}`)
 					.then(response => {
 						if (!response.ok)
 							throw new Error(`HTTP error! status: ${response.status}`);
@@ -2854,7 +2860,7 @@ function LogicExplanation({ asset, groups, showDecimal = true }) {
 				}
 				
 				// 2. Process text for keywords and variables
-				return <React.Fragment key={`${uniqueKeyPrefix}-${index}`}>{highlightKeywords(part)}</React.Fragment>;
+				return <Fragment key={`${uniqueKeyPrefix}-${index}`}>{highlightKeywords(part)}</Fragment>;
 			});
 		};
 
@@ -2944,7 +2950,7 @@ function testAchievement(mem)
 {
 	_testIndex += 1;
 	let id = 9000000 + _testIndex;
-	current.set.achievements.set(id, 
+	current.set.achievements.set(id,
 		Achievement.fromJSON({
 			ID: id,
 			Title: `Test Achievement #${_testIndex}`,

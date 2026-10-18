@@ -1,3 +1,8 @@
+import  { Fragment } from 'react';
+import { BitProficiency, PAUSERESET, ReqFlag, ReqType, ReqAddrType, ReqOperand, ConditionFormatter, PartialAccess, MemSize } from "./logic";
+import { Leaderboard, AssetState, RichPresence } from "./achievements";
+import { current, get_game_title } from './state';
+
 function make_title_case(phrase)
 {
 	const TITLE_CASE_MINORS = new Set([
@@ -28,10 +33,10 @@ function make_title_case(phrase)
 	});
 }
 
-function toDisplayHex(addr)
+export function toDisplayHex(addr)
 { return '0x' + addr.toString(16).padStart(8, '0'); }
 
-const FeedbackSeverity = Object.freeze({
+export const FeedbackSeverity = Object.freeze({
 	PASS: 0,
 	INFO: 1,
 	WARN: 2,
@@ -39,9 +44,9 @@ const FeedbackSeverity = Object.freeze({
 	ERROR: 4,
 });
 
-const SEVERITY_TO_CLASS = ['pass', 'info', 'warn', 'fail', 'fail'];
+export const SEVERITY_TO_CLASS = ['pass', 'info', 'warn', 'fail', 'fail'];
 
-const Feedback = Object.freeze({
+export const Feedback = Object.freeze({
 	// writing policy feedback
 	TITLE_CASE: { type: 'writing', severity: FeedbackSeverity.INFO, 
 		desc: "Titles should be written in title case according to the Chicago Manual of Style.",
@@ -1395,9 +1400,9 @@ function* check_notes_enum_hex(notes)
 			yield new Issue(Feedback.NOTE_ENUM_HEX, note,
 				<ul>
 					<li>Code note at <code className="ref-link" data-ref={note.addr}>{toDisplayHex(note.addr)}</code>: <code>{note.getHeader()}</code></li>
-					<li>Found potential hex values: {found.map((x, i) => <React.Fragment key={i}>
+					<li>Found potential hex values: {found.map((x, i) => <Fragment key={i}>
 						{i == 0 ? '' : ', '} <code>{x}</code>
-					</React.Fragment>)}</li>
+					</Fragment>)}</li>
 				</ul>);
 	}
 }
@@ -1416,9 +1421,9 @@ function* check_notes_enum_size_mismatch(notes)
 				<ul>
 					<li>Code note at <code className="ref-link" data-ref={note.addr}>{toDisplayHex(note.addr)}</code>: <code>{note.getHeader()}</code></li>
 					<li>The code note is listed as <code>{note.type.name}</code>, which has a max value of <code>0x{(note.type.maxvalue.toString(16).toUpperCase())}</code></li>
-					<li>The following enumerated values are too large for this code note: {found.map((x, i) => <React.Fragment key={i}>
+					<li>The following enumerated values are too large for this code note: {found.map((x, i) => <Fragment key={i}>
 						{i == 0 ? '' : ', '} <code>{x}</code>
-					</React.Fragment>)}</li>
+					</Fragment>)}</li>
 				</ul>
 			);
 	}
@@ -1572,9 +1577,9 @@ function* check_rp_lookups(rp) {
 		
 		let caseCollisions = rp.scriptLookups.filter(x => x !== lookup && x.name.toLowerCase() === lookup.name.toLowerCase() && x.name !== lookup.name);
 		if (caseCollisions.length > 0 && caseCollisions.every(x => lookup.name < x)) {
-			let conflictList = <React.Fragment>{caseCollisions.map((x, i) => 
-				<React.Fragment key={i}>{i == 0 ? '' : ', '} <code>{x}</code></React.Fragment>
-			)}</React.Fragment>;
+			let conflictList = <Fragment>{caseCollisions.map((x, i) => 
+				<Fragment key={i}>{i == 0 ? '' : ', '} <code>{x}</code></Fragment>
+			)}</Fragment>;
 			yield new Issue(Feedback.RP_MACRO_CASE_COLLISION, lookup, <ul>
 				<li>Macro <code>{lookup.name}</code> conflicts with {conflictList}</li>
 			</ul>);
@@ -1668,7 +1673,7 @@ function* check_rp_display_strings(rp) {
 			
 			let exactMatch = rp.scriptLookups.some(x => x.name === part.text);
 			if (!exactMatch) {
-				let suggestion = <React.Fragment></React.Fragment>;
+				let suggestion = <Fragment></Fragment>;
 				let caseMatch = rp.scriptLookups.find(x => x.name.toLowerCase() === part.text.toLowerCase());
 				if (caseMatch) suggestion = <ul>
 						<li><em>Did you mean <code>&#123;{caseMatch.name}&#125;</code>? Macro names are case-sensitive.</em></li>
@@ -1929,7 +1934,7 @@ function get_leaderboard_issues(lb)
 	return res;
 }
 
-function assess_achievement(ach)
+export function assess_achievement(ach)
 {
 	let res = new Assessment();
 
@@ -1942,7 +1947,7 @@ function assess_achievement(ach)
 	return ach.feedback = res;
 }
 
-function assess_leaderboard(lb)
+export function assess_leaderboard(lb)
 {
 	let res = new Assessment();
 
@@ -1955,7 +1960,7 @@ function assess_leaderboard(lb)
 	return lb.feedback = res;
 }
 
-function assess_code_notes(notes)
+export function assess_code_notes(notes)
 {
 	let res = new Assessment();
 
@@ -1967,7 +1972,7 @@ function assess_code_notes(notes)
 	return notes.feedback = res;
 }
 
-function assess_rich_presence(rp)
+export function assess_rich_presence(rp)
 {
 	let res = new Assessment();
 	rp ??= new RichPresence(); // if there is no RP, just use a placeholder
@@ -1981,7 +1986,7 @@ function assess_rich_presence(rp)
 	return rp.feedback = res;
 }
 
-function assess_set(set)
+export function assess_set(set)
 {
 	let res = new Assessment();
 
