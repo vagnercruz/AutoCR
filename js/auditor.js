@@ -67,7 +67,7 @@ export class Auditor {
     }
 
     // Remove as tags para avaliar apenas a descrição limpa
-    const description = header.replace(/\[.*?\]/g, "").trim();
+    const description = header.replaceAll(/\[.*?\]/g, "").trim();
 
     if (
       description.length <= 3 ||
@@ -90,12 +90,14 @@ export class Auditor {
 
     // Captura o prefixo estrutural, o valor e o separador usado
     const enumLineRegex =
-      /^([.\+\s\|]*)(0x[0-9a-fA-F]+|-?\d+(?:\.\d+)?|Bit\s*\d+)\s*([:=|\-]{1,2})\s*(.+)$/i;
+      /^([.+\s|]*)(0x[0-9a-fA-F]+|-?\d+(?:\.\d+)?|Bit\s*\d+)\s*([:=|-]{1,2})\s*(.+)$/i;
 
     // Inicia em 1 para ignorar a linha do cabeçalho
     for (let i = 1; i < lines.length; i++) {
       const line = lines[i].trim();
-      if (!line) continue;
+      if (!line) {
+        continue;
+      }
 
       const match = line.match(enumLineRegex);
       if (match) {
@@ -114,7 +116,7 @@ export class Auditor {
         // Validação rigorosa de bits
         const bitMatch = literal.match(/^Bit\s*(\d+)$/i);
         if (bitMatch) {
-          const bitNum = parseInt(bitMatch[1], 10);
+          const bitNum = Number.parseInt(bitMatch[1], 10);
           if (bitNum > 7) {
             issues.push({
               level: "ERROR",
