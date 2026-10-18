@@ -2344,6 +2344,11 @@ function addLookups(t) {
   );
 }
 
+const HTML_ESCAPES = { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" };
+function escapeHTML(text) {
+  return text.replaceAll(/[&<>"']/g, (c) => HTML_ESCAPES[c]);
+}
+
 function HighlightedRichPresence({ script, onLogicSelected = null }) {
   if (!script) {
     return null;
@@ -2382,7 +2387,8 @@ function HighlightedRichPresence({ script, onLogicSelected = null }) {
   let rptext = script
     .split(/\r\n|(?!\r\n)[\n-\r\u0085\u2028\u2029]/g)
     .map((line) => {
-      line = line.trim();
+      // the script is rendered as HTML, so escape it before adding highlight markup
+      line = escapeHTML(line.trim());
       if (display) {
         line = line.startsWith("?")
           ? line.replaceAll(
