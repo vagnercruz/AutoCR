@@ -80,3 +80,88 @@ describe("auditEnumerations", () => {
     expect(rules("[8-bit] Mode\n| 0x00 = Title\n+ 0x01 = Game")).toEqual([]);
   });
 });
+
+const pointer = (lines) => ["[32-bit] Pointer to player struct", ...lines].join("\n");
+
+describe("pointer notes", () => {
+  test("accepts well-formed offsets", () => {
+    expect(rules(pointer(["+0x10 | [8-bit] Current HP", "+0x14 | [16-bit] Max HP"]))).toEqual([]);
+  });
+
+  test("audits each offset like a header", () => {
+    expect(rules(pointer(["+0x10 | Current HP", "+0x14 | [16-bit] Max HP"]))).toEqual([
+      "SIZE_FORMAT_ERROR",
+    ]);
+  });
+
+  test("warns on offsets without 0x", () => {
+    expect(rules(pointer(["+10 | [8-bit] Current HP", "+14 | [16-bit] Max HP"]))).toEqual([
+      "POINTER_OFFSET_HEX",
+      "POINTER_OFFSET_HEX",
+    ]);
+  });
+
+  test("audits enumerations under an offset", () => {
+    const text = pointer(["+0x10 | [8-bit] Character", "  0x00 = Mario", "  0x01: Luigi", "+0x14 | [8-bit] Lives"]);
+    expect(rules(text)).toEqual(["INVALID_SEPARATOR"]);
+  });
+
+  test("scopes duplicate values to their offset", () => {
+    const text = pointer(["+0x10 | [8-bit] Door state", "  0x00 = Off", "  0x01 = On", "+0x14 | [8-bit] Chest state", "  0x00 = Off", "  0x01 = On"]);
+    expect(rules(text)).toEqual([]);
+  });
+});
+
+describe("enumeration values", () => {
+  test("warns on duplicate values", () => {
+    expect(rules("[8-bit] Character\n0x01 = Mario\n0x01 = Luigi")).toEqual(["DUPLICATE_ENUM_VALUE"]);
+    expect(rules("[8-bit] Flags\nBit0 = Sword\nBit 0 = Shield")).toEqual(["DUPLICATE_ENUM_VALUE"]);
+  });
+
+  test("rejects nibble values above 0xF", () => {
+    expect(rules("[Lower4] Stage\n0x0F = Last")).toEqual([]);
+    expect(rules("[Upper4] Stage\n0x10 = Overflow")).toEqual(["NIBBLE_VALUE_OUT_OF_RANGE"]);
+  });
+});
+
+describe("suggestFix", () => {
+  test.each([
+    ["Lives [8 bits]\n0x00: none", "[8-bit] Lives 8 bits\n0x00=none"],
+    ["[16-bits be] Score", "[16-bit BE] Score"],
+    ["[8-bit] Character\n0x01 => Luigi\n1F = Peach", "[8-bit] Character\n0x01=Luigi\n0x1F=Peach"],
+    ["[8-bit] [Bitflags] Unlocks\nBit0 = Sword", "[8-bit] Bitflags Unlocks\nBit0 = Sword"],
+    ["[8-bit] [JP] Lives", "[8-bit] [JP] Lives"],
+    [
+      "[32-bit] Pointer to player\n+10 | Current HP\n+0x14 | [16-bits] Max HP",
+      "[32-bit] Pointer to player\n+0x10 | [8-bit] Current HP\n+0x14 | [16-bit] Max HP",
+    ],
+  ])("%p", (input, expected) => {
+    expect(Auditor.suggestFix(input)).toBe(expected);
+  });
+});
+
+describe("formatReport", () => {
+  test("renders one section per note", () => {
+    const results = Auditor.auditNotes([
+      { addr: 0x10, ...note("[8-bit] Character\n0x01: Luigi") },
+      { addr: 0x20, ...note("[8-bit] Lives counter") },
+    ]);
+    expect(results).toHaveLength(1);
+    expect(Auditor.formatReport(results, "Test Game")).toBe(
+      [
+        "## AutoCR code note report: Test Game",
+        "",
+        "1 code note(s) with issues.",
+        "",
+        "### `0x00000010` [8-bit] Character",
+        "- **Error:** Values must use an '=' sign. Found ':' in \"0x01: Luigi\". Do not use colons or dashes.",
+        "",
+        "Suggested correction:",
+        "```",
+        "[8-bit] Character\n0x01=Luigi",
+        "```",
+        "",
+      ].join("\n"),
+    );
+  });
+});

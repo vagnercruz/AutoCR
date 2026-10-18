@@ -27,6 +27,7 @@ import { Logic, ReqFlag, ConditionFormatter, ReqType, MemSize } from "./logic";
 import { LogicExplainer } from "./explainer";
 import { Auditor } from "./auditor";
 import { current, get_game_title } from "./state";
+import { clearSession, loadSession, saveSession } from "./storage";
 
 const sidebar = createRoot(document.getElementById("list-body"));
 const container = createRoot(document.getElementById("info-container"));
@@ -62,15 +63,20 @@ function reset_loaded() {
   current.set = new AchievementSet();
   current.notes = new CodeNoteSet();
   current.rp = null;
+  current.files = []; // raw files loaded from disk, kept so the session survives a reload
   clearSelected();
 }
 
-document.getElementById("unload-set").addEventListener("click", () => {
+document.getElementById("unload-set").addEventListener("click", async () => {
+  await clearSession();
   history.pushState(null, "", location.pathname + location.search);
   location.reload();
 });
 
+// "Load by Game ID" always asks the middleware, even if files for that game were saved
+let skip_saved_session = false;
 const submit_gameid = () => {
+  skip_saved_session = true;
   location.hash = "#!/game/" + document.getElementById("game-id").value;
 };
 document.getElementById("load-game-id").addEventListener("click", submit_gameid);
@@ -129,46 +135,81 @@ document.onkeydown = function (event) {
   }
 };
 
+function load_file_text(name, text) {
+  if (name.endsWith("-Notes.json")) {
+    load_code_notes(JSON.parse(text));
+  } else if (name.endsWith(".json")) {
+    load_achievement_set(JSON.parse(text));
+  } else if (name.endsWith("-Rich.txt")) {
+    load_rich_presence(text, true);
+  } else if (name.endsWith("-User.txt")) {
+    load_user_file(text);
+  } else {
+    return false;
+  }
+  return true;
+}
+
 function load_files(fileList) {
   for (const file of fileList) {
     const idregex = file.name.match(/^(\d+)/);
+    if (!idregex) {
+      continue;
+    }
     const thisid = +idregex[1];
     if (thisid !== current.id) {
       current.id = thisid;
       reset_loaded();
     }
 
-    const reader = new FileReader();
-    if (file.name.endsWith("-Notes.json")) {
-      reader.onload = function (event) {
-        const data = JSON.parse(event.target.result);
-        load_code_notes(data);
-      };
-    } else if (file.name.endsWith(".json")) {
-      reader.onload = function (event) {
-        const data = JSON.parse(event.target.result);
-        load_achievement_set(data);
-      };
-    } else if (file.name.endsWith("-Rich.txt")) {
-      reader.onload = function (event) {
-        const data = event.target.result;
-        load_rich_presence(data, true);
-      };
-    } else if (file.name.endsWith("-User.txt")) {
-      reader.onload = function (event) {
-        const data = event.target.result;
-        load_user_file(data);
-      };
-    }
-    reader.readAsText(file);
+    file.text().then((text) => {
+      if (thisid !== current.id || !load_file_text(file.name, text)) {
+        return;
+      }
+      current.files = current.files.filter((f) => f.name !== file.name);
+      current.files.push({ name: file.name, text });
+      saveSession({ id: current.id, title: get_game_title(), files: current.files });
+    });
   }
+}
+
+function restore_session(session) {
+  current.id = session.id;
+  reset_loaded();
+  current.files = session.files;
+  for (const { name, text } of session.files) {
+    load_file_text(name, text);
+  }
+}
+
+async function show_saved_session() {
+  const session = await loadSession();
+  const anchor = document.getElementById("load-by-game-id");
+  if (!session?.files?.length || !anchor || document.getElementById("restore-session")) {
+    return;
+  }
+
+  const box = document.createElement("div");
+  box.id = "restore-session";
+  const button = document.createElement("button");
+  button.type = "button";
+  button.textContent = `Restore last session: ${session.title ?? "Game"} (${session.id})`;
+  button.title = `${session.files.map((f) => f.name).join(", ")}
+Saved ${new Date(session.savedAt).toLocaleString()}`;
+  button.addEventListener("click", () => {
+    location.hash = `#!/game/${session.id}`;
+  });
+  box.append(button);
+  anchor.after(box);
 }
 
 async function copy_to_clipboard(text) {
   try {
     await navigator.clipboard.writeText(text);
+    return true;
   } catch (error) {
     console.error(error.message);
+    return false;
   }
 }
 
@@ -1071,6 +1112,80 @@ function CollapsibleExplainer({ title = "Logic Analysis", children }) {
   );
 }
 
+function formatChangeValue(value) {
+  if (value === undefined || value === null || value === "") {
+    return <em>(none)</em>;
+  }
+  return <code className="change-value">{String(value)}</code>;
+}
+
+function AssetChanges({ asset }) {
+  if (!asset.published) {
+    return null;
+  }
+  const changes = asset.changes();
+  return (
+    <details className="asset-changes" open={changes.length > 0}>
+      <summary>
+        ✏️ Local changes vs. published:{" "}
+        {changes.length > 0 ? `${changes.length} field(s) changed` : "no differences"}
+      </summary>
+      {changes.length > 0 && (
+        <table>
+          <thead>
+            <tr>
+              <th>Field</th>
+              <th>Published</th>
+              <th>Local</th>
+            </tr>
+          </thead>
+          <tbody>
+            {changes.map(({ field, before, after }) => (
+              <tr key={field}>
+                <td>{field}</td>
+                <td className="change-before">{formatChangeValue(before)}</td>
+                <td className="change-after">{formatChangeValue(after)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+    </details>
+  );
+}
+
+function ModifiedAssetsSummary() {
+  const modified = current.set.getModifiedAssets();
+  if (modified.length === 0) {
+    return null;
+  }
+  return (
+    <details className="asset-changes" open>
+      <summary>✏️ {modified.length} published asset(s) changed locally</summary>
+      <ul>
+        {modified.map((asset) => (
+          <li key={asset.toRefString()}>
+            <a
+              href="#"
+              onClick={(e) => {
+                e.preventDefault();
+                jump_to_asset(asset);
+              }}
+            >
+              {asset.title}
+            </a>
+            :{" "}
+            {asset
+              .changes()
+              .map((c) => c.field)
+              .join(", ")}
+          </li>
+        ))}
+      </ul>
+    </details>
+  );
+}
+
 function AchievementInfo({ ach }) {
   const feedback = ach.feedback;
   const feedback_targets = new Set([].concat(...feedback.issues).map((x) => x.target));
@@ -1106,6 +1221,7 @@ function AchievementInfo({ ach }) {
           <span className={`${feedback_targets.has("desc") ? "warn" : ""}`}>{ach.desc}</span>
         </p>
       </div>
+      <AssetChanges asset={ach} />
 
       <CollapsibleExplainer title={`Logic Analysis for: ${ach.title}`}>
         <LogicExplanation asset={ach} groups={ach.logic.groups} showDecimal={!isHex} />
@@ -1231,6 +1347,7 @@ function LeaderboardInfo({ lb }) {
           <span className={`${feedback_targets.has("desc") ? "warn" : ""}`}>{lb.desc}</span>
         </p>
       </div>
+      <AssetChanges asset={lb} />
 
       <CollapsibleExplainer title={`Logic Analysis for: ${lb.title}`}>
         <h3>Start Conditions</h3>
@@ -1444,6 +1561,7 @@ function AchievementSetOverview() {
         </p>
       </div>
       {setNotReady}
+      <ModifiedAssetsSummary />
       <div className="chart float-right">
         <h3>Achievement Typing</h3>
         <ChartCanvas
@@ -2182,6 +2300,8 @@ function CodeNotesOverview() {
   const displayissues = feedback.issues.filter(
     (issue) => !issue.target || displaynotes.includes(issue.target),
   );
+  const displayaudit = (current.notes.audit ?? []).filter((x) => displaynotes.includes(x.note));
+  const [reportStatus, setReportStatus] = useState(null);
 
   return (
     <>
@@ -2279,6 +2399,23 @@ function CodeNotesOverview() {
         type="button"
       >
         Download Backup
+      </button>
+
+      <button
+        className="float-right"
+        disabled={displayaudit.length === 0}
+        onClick={async () => {
+          const ok = await copy_to_clipboard(
+            Auditor.formatReport(displayaudit, get_game_title() ?? ""),
+          );
+          setReportStatus(ok ? "✅ Copied!" : "❌ Copy failed");
+          setTimeout(() => setReportStatus(null), 2000);
+        }}
+        style={{ marginRight: "10px" }}
+        title="Copy the code note audit as Markdown"
+        type="button"
+      >
+        {reportStatus ?? `Copy Report (${displayaudit.length})`}
       </button>
 
       <button
@@ -3280,6 +3417,132 @@ function RichPresenceOverview() {
   );
 }
 
+function loadImage(url) {
+  return new Promise((resolve) => {
+    const img = new Image();
+    img.crossOrigin = "anonymous"; // keeps the canvas exportable
+    img.onload = () => resolve(img);
+    img.onerror = () => resolve(null);
+    img.src = url;
+  });
+}
+
+// Draws the classic badge board (same layout as upstream AutoCR) for copying as an image
+async function renderBadgeCanvas(set, achs, authorText) {
+  const PADDING = 10;
+  const ROWLEN = 10;
+  const WIDTH = 2 * PADDING + (64 + PADDING) * ROWLEN;
+  const HEIGHT = PADDING + 96 + PADDING + (64 + PADDING) * Math.ceil(achs.length / ROWLEN);
+
+  const canvas = document.createElement("canvas");
+  canvas.width = WIDTH;
+  canvas.height = HEIGHT;
+  const ctx = canvas.getContext("2d");
+
+  ctx.fillStyle = "#2b374a";
+  ctx.fillRect(0, 0, WIDTH, HEIGHT);
+  ctx.fillStyle = "#111111";
+  ctx.fillRect(PADDING + 3, PADDING + 3, 96, 96);
+
+  const badgePos = (i) => [
+    2 * PADDING + (i % ROWLEN) * (64 + PADDING),
+    PADDING + 96 + PADDING + Math.floor(i / ROWLEN) * (64 + PADDING),
+  ];
+  for (let i = 0; i < achs.length; i++) {
+    const [x, y] = badgePos(i);
+    ctx.fillRect(x + 3, y + 3, 64, 64);
+  }
+
+  const dropShadow = (text, x, y, font, maxwidth = 10_000) => {
+    ctx.font = font;
+    ctx.fillStyle = "black";
+    ctx.fillText(text, x + 2, y + 2, maxwidth);
+    ctx.fillStyle = "white";
+    ctx.fillText(text, x, y, maxwidth);
+  };
+  const textWidth = WIDTH - (PADDING * 3 + 96);
+  ctx.textBaseline = "top";
+  dropShadow(
+    set.title || "Untitled",
+    PADDING * 2 + 96 + 5,
+    PADDING + 5,
+    "bold 32px serif",
+    textWidth,
+  );
+  dropShadow(authorText, PADDING * 2 + 96 + 10, PADDING + 48, "18px serif", textWidth);
+
+  const consoleIcon = set.console?.icon
+    ? `https://static.retroachievements.org/assets/images/system/${set.console.icon}.png`
+    : null;
+  if (consoleIcon) {
+    ctx.textBaseline = "middle";
+    ctx.textAlign = "right";
+    dropShadow(set.console.name, WIDTH - (3 * PADDING + 32), PADDING + 96 - 16, "12px serif");
+  }
+
+  const [icon, consoleImg, ...badges] = await Promise.all([
+    set.icon ? loadImage(set.icon) : null,
+    consoleIcon ? loadImage(consoleIcon) : null,
+    ...achs.map((ach) => (ach.badge ? loadImage(ach.badge) : null)),
+  ]);
+  if (icon) {
+    ctx.drawImage(icon, PADDING, PADDING, 96, 96);
+  }
+  if (consoleImg) {
+    ctx.drawImage(consoleImg, WIDTH - 2 * PADDING - 32, PADDING + 96 - 32, 32, 32);
+  }
+  badges.forEach((img, i) => {
+    if (img) {
+      ctx.drawImage(img, ...badgePos(i), 64, 64);
+    }
+  });
+  return canvas;
+}
+
+function CopyBadgeImageButton({ set, achs, authorText }) {
+  const [status, setStatus] = useState("📋 Copy Image");
+  const [busy, setBusy] = useState(false);
+
+  const copy = async () => {
+    setBusy(true);
+    setStatus("⏳ Rendering...");
+    // passing a promise keeps the clipboard write tied to the click in Safari
+    const blob = renderBadgeCanvas(set, achs, authorText).then(
+      (canvas) =>
+        new Promise((resolve, reject) =>
+          canvas.toBlob((b) => (b ? resolve(b) : reject(new Error("empty canvas"))), "image/png"),
+        ),
+    );
+    try {
+      await navigator.clipboard.write([new ClipboardItem({ "image/png": blob })]);
+      setStatus("✅ Copied!");
+    } catch (error) {
+      // clipboard images are not available everywhere, so fall back to a download
+      console.warn("Copy image failed, downloading instead:", error);
+      try {
+        const url = URL.createObjectURL(await blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = `${set.id ?? current.id}-badges.png`;
+        a.click();
+        URL.revokeObjectURL(url);
+        setStatus("💾 Downloaded");
+      } catch (error) {
+        console.error("Rendering badge image failed:", error);
+        setStatus("❌ Failed");
+      }
+    }
+    setBusy(false);
+    setTimeout(() => setStatus("📋 Copy Image"), 2000);
+  };
+
+  return (
+    <button className="copy-badge-image" disabled={busy} onClick={copy} type="button">
+      {status}
+    </button>
+  );
+}
+
 function BadgeGrid({ set = current.set }) {
   const achs = set.getAchievements();
 
@@ -3290,12 +3553,13 @@ function BadgeGrid({ set = current.set }) {
   for (const auth of authors) {
     authcount.push([auth, authorlist.filter((x) => x === auth).length]);
   }
-  authcount.sort(([a, _1], [b, _2]) => b - a);
+  authcount.sort(([, a], [, b]) => b - a); // most achievements first
   const authorText =
     authcount.length > 0 ? "Set developed by " + authcount.map(([a, _]) => a).join(", ") : "";
 
   return (
     <div className="classic-badge-board">
+      <CopyBadgeImageButton achs={achs} authorText={authorText} set={set} />
       <div className="classic-badge-header">
         <img alt="Game Icon" className="game-icon" src={set.icon} />
 
@@ -3551,138 +3815,68 @@ function update() {
   current.notes.sort((a, b) => a.addr - b.addr);
   assess_code_notes(current.notes);
 
-  const qaIssues = [];
+  current.notes.audit = Auditor.auditNotes(current.notes);
+  const qaIssues = current.notes.audit.map(({ note, issues: report, fix: suggestedFix }) => ({
+    target: note,
+    severity: report.some((issue) => issue.level === "ERROR") ? 3 : 2,
+    type: {
+      desc: `[AUTOCR] ${toDisplayHex(note.addr)} — ${report.length} error(s)`,
+      ref: ["https://docs.retroachievements.org/guidelines/content/code-notes.html"],
+    },
+    detail: (
+      <details id={`qa-issue-${note.addr}`} style={{ marginTop: "10px" }}>
+        <summary
+          style={{ cursor: "pointer", fontWeight: "bold", padding: "4px 0", outline: "none" }}
+        >
+          Expand details and suggested correction
+        </summary>
 
-  for (const note of current.notes) {
-    const report = Auditor.auditCodeNote(note);
+        <div
+          style={{
+            marginTop: "10px",
+            paddingLeft: "12px",
+            borderLeft: "2px solid rgba(255,255,255,0.1)",
+          }}
+        >
+          <strong>Original Note:</strong>
+          <pre
+            style={{
+              background: "rgba(0,0,0,0.1)",
+              padding: "8px",
+              borderLeft: "3px solid #ff4444",
+              whiteSpace: "pre-wrap",
+              marginTop: "6px",
+            }}
+          >
+            {note.note}
+          </pre>
 
-    if (report.length > 0) {
-      const hexAddr = "0x" + note.addr.toString(16).padStart(8, "0");
+          <ul style={{ listStyleType: "none", paddingLeft: 0, margin: "12px 0" }}>
+            {report.map((issue, idx) => (
+              <li key={idx} style={{ marginBottom: "6px" }}>
+                <strong>[{idx + 1}]</strong> {issue.level === "ERROR" ? "Error:" : "Warning:"}{" "}
+                {issue.message}
+              </li>
+            ))}
+          </ul>
 
-      const hasError = report.some((issue) => issue.level === "ERROR");
-
-      const lines = note.note.split(/\r\n|\n/);
-      let suggestedFix = "";
-
-      if (lines.length > 0) {
-        let header = lines[0];
-        let foundSize = null;
-
-        // Extracts size tag (including plurals, Lower4, Upper4, ASCII) and cleans other tags
-        header = header.replaceAll(/\[(.*?)\]/g, (match, innerText) => {
-          // Identifies bit sizes (accepts plural 'Bits' and normalizes to official singular)
-          const bitMatch = innerText.match(/^(\d+-bit)(?:s)?((?: BE)?(?: BCD)?(?: BE BCD)?)$/i);
-          if (bitMatch) {
-            foundSize = `[${bitMatch[1].toLowerCase()}${bitMatch[2].toUpperCase()}]`;
-            return "";
-          }
-
-          // Identifies other valid sizes
-          const otherMatch = innerText.match(
-            /^(Float(?: BE)?|\d+x\d+ bytes?|\d+ bytes?|Lower4|Upper4|ASCII|General game notes)$/i,
-          );
-          if (otherMatch) {
-            foundSize = `[${innerText}]`;
-            return "";
-          }
-
-          // Identifies Metadata tags (Regions, BCD, BE) to keep them intact with brackets
-          const metadataMatch = innerText.match(/^(JP|EU|EUR|US|USA|EUA|ALL|World|BCD|BE)$/i);
-          if (metadataMatch) {
-            return match; // Retorna exatamente como estava, com os colchetes
-          }
-
-          // Returns without brackets for incorrectly marked descriptions (like Bitflags)
-          return innerText;
-        });
-
-        // Removes leftover loose hyphens or colons at the edges
-        header = header.replaceAll(/(^[-:\s]+|[-:\s]+$)/g, "").trim();
-
-        // Assembles the final header with the tag always at the beginning
-        if (foundSize) {
-          lines[0] = `${foundSize} ${header}`.trim();
-        } else {
-          lines[0] = `[8-bit] ${header}`.trim();
-        }
-
-        // Cleans up unwanted double spaces
-        lines[0] = lines[0].replaceAll(/\s{2,}/g, " ");
-
-        // Fixes the body (enumerations) starting from the second line
-        for (let i = 1; i < lines.length; i++) {
-          lines[i] = lines[i].replace(
-            /^([.+\s|]*)(0x[0-9a-fA-F]+|-?\d+(?:\.\d+)?|Bit\s*\d+)\s*[:\-|]{1,2}\s*/i,
-            "$1$2=",
-          );
-          lines[i] = lines[i].replaceAll(/\[(.*?)\]/g, "$1");
-        }
-        suggestedFix = lines.join("\n");
-      }
-
-      qaIssues.push({
-        target: note,
-        severity: hasError ? 3 : 2,
-        type: {
-          desc: `[AUTOCR] ${hexAddr} — ${report.length} error(s)`,
-          ref: ["https://docs.retroachievements.org/Code-Notes/"],
-        },
-        detail: (
-          <details id={`qa-issue-${note.addr}`} style={{ marginTop: "10px" }}>
-            <summary
-              style={{ cursor: "pointer", fontWeight: "bold", padding: "4px 0", outline: "none" }}
-            >
-              Expand details and suggested correction
-            </summary>
-
-            <div
-              style={{
-                marginTop: "10px",
-                paddingLeft: "12px",
-                borderLeft: "2px solid rgba(255,255,255,0.1)",
-              }}
-            >
-              <strong>Original Note:</strong>
-              <pre
-                style={{
-                  background: "rgba(0,0,0,0.1)",
-                  padding: "8px",
-                  borderLeft: "3px solid #ff4444",
-                  whiteSpace: "pre-wrap",
-                  marginTop: "6px",
-                }}
-              >
-                {note.note}
-              </pre>
-
-              <ul style={{ listStyleType: "none", paddingLeft: 0, margin: "12px 0" }}>
-                {report.map((issue, idx) => (
-                  <li key={idx} style={{ marginBottom: "6px" }}>
-                    <strong>[{idx + 1}]</strong> {issue.level === "ERROR" ? "Error:" : "Warning:"}{" "}
-                    {issue.message}
-                  </li>
-                ))}
-              </ul>
-
-              <strong>Suggested correction:</strong>
-              <pre
-                style={{
-                  background: "rgba(0,0,0,0.1)",
-                  padding: "8px",
-                  borderLeft: "3px solid #44ff44",
-                  color: "#ccc",
-                  whiteSpace: "pre-wrap",
-                  marginTop: "6px",
-                }}
-              >
-                {suggestedFix}
-              </pre>
-            </div>
-          </details>
-        ),
-      });
-    }
-  }
+          <strong>Suggested correction:</strong>
+          <pre
+            style={{
+              background: "rgba(0,0,0,0.1)",
+              padding: "8px",
+              borderLeft: "3px solid #44ff44",
+              color: "#ccc",
+              whiteSpace: "pre-wrap",
+              marginTop: "6px",
+            }}
+          >
+            {suggestedFix}
+          </pre>
+        </div>
+      </details>
+    ),
+  }));
 
   if (qaIssues.length > 0) {
     qaIssues.label = "Code Notes";
@@ -3776,42 +3970,56 @@ function main(event) {
   if (location.hash.startsWith("#!/")) {
     const parts = location.hash.toLowerCase().split("/");
     switch (parts[1]) {
-      case "game":
+      case "game": {
         if (Number(parts[2]) === current.id) {
           return route_change();
         }
 
-        reset_loaded();
-        document.getElementById("loading-overlay").classList.add("shown");
-        fetch(`${MIDDLEWARE_URL}/pack/${parts[2]}`)
-          .then((response) => {
-            if (!response.ok) {
-              throw new Error(`HTTP error! status: ${response.status}`);
-            }
-            return response.json();
-          })
-          .then((data) => {
-            current.id = data.game?.GameId;
-            current.set.addJSON(data.game);
-            if (data.game.RichPresencePatch) {
-              load_rich_presence(data.game.RichPresencePatch, false);
-            }
-            for (const obj of data.notes) {
-              if (obj.Note) {
-                current.notes.add(new CodeNote(obj.Address, obj.Note, obj.User));
-              }
-            }
-            update();
-          })
-          .catch((error) => {
-            console.error("Error fetching data:", error);
-          })
-          .finally(() => {
-            document.getElementById("loading-overlay").classList.remove("shown");
-          });
+        const fresh = skip_saved_session;
+        skip_saved_session = false;
+        (fresh ? Promise.resolve(null) : loadSession()).then((session) => {
+          if (session?.id === Number(parts[2]) && session.files?.length) {
+            restore_session(session);
+          } else {
+            load_from_middleware(parts[2]);
+          }
+        });
         return;
+      }
     }
   }
+  show_saved_session();
+}
+
+function load_from_middleware(gameid) {
+  reset_loaded();
+  document.getElementById("loading-overlay").classList.add("shown");
+  fetch(`${MIDDLEWARE_URL}/pack/${gameid}`)
+    .then((response) => {
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
+      return response.json();
+    })
+    .then((data) => {
+      current.id = data.game?.GameId;
+      current.set.addJSON(data.game);
+      if (data.game.RichPresencePatch) {
+        load_rich_presence(data.game.RichPresencePatch, false);
+      }
+      for (const obj of data.notes) {
+        if (obj.Note) {
+          current.notes.add(new CodeNote(obj.Address, obj.Note, obj.User));
+        }
+      }
+      update();
+    })
+    .catch((error) => {
+      console.error("Error fetching data:", error);
+    })
+    .finally(() => {
+      document.getElementById("loading-overlay").classList.remove("shown");
+    });
 }
 
 // --------------------------------------------------

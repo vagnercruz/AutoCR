@@ -245,22 +245,7 @@ export const Feedback = Object.freeze({
     desc: "Empty code note.",
     ref: [],
   },
-  NOTE_NO_SIZE: {
-    type: "codenotes",
-    severity: FeedbackSeverity.FAIL,
-    desc: "Code notes must have size information.",
-    ref: [
-      "https://docs.retroachievements.org/guidelines/content/code-notes.html#specifying-memory-addresses-size",
-    ],
-  },
-  NOTE_ENUM_HEX: {
-    type: "codenotes",
-    severity: FeedbackSeverity.FAIL,
-    desc: 'Enumerated hex values in code notes should be prefixed with "0x" to avoid being misinterpreted as decimal values.',
-    ref: [
-      "https://docs.retroachievements.org/guidelines/content/code-notes.html#adding-values-and-labels",
-    ],
-  },
+
   NOTE_ENUM_TOO_LARGE: {
     type: "codenotes",
     severity: FeedbackSeverity.FAIL,

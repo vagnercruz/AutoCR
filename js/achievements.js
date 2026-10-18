@@ -209,9 +209,28 @@ class Asset {
   author = null;
   title;
   desc;
+  published = null; // the published version, when this is a local edit of it
   #ref = "";
   constructor() {
     this.#ref = crypto.randomUUID();
+  }
+
+  diffFields() {
+    return { Title: this.title, Description: this.desc };
+  }
+
+  /**
+   * Lists what changed between the published version and this local edit.
+   * @returns {Array<{field: string, before, after}>}
+   */
+  changes() {
+    if (!this.published) {
+      return [];
+    }
+    const before = this.published.diffFields();
+    return Object.entries(this.diffFields())
+      .filter(([field, after]) => before[field] !== after)
+      .map(([field, after]) => ({ field, before: before[field], after }));
   }
 
   isArchived() {
@@ -249,6 +268,17 @@ export class Achievement extends Asset {
   constructor() {
     super();
   }
+
+  diffFields() {
+    return {
+      ...super.diffFields(),
+      Points: this.points,
+      Type: this.achtype || "",
+      Badge: this.badge,
+      Logic: this.logic?.mem,
+    };
+  }
+
   static fromJSON(json) {
     const ach = new Achievement();
     ach.id = json.ID;
@@ -309,6 +339,18 @@ export class Leaderboard extends Asset {
   constructor() {
     super();
   }
+
+  diffFields() {
+    return {
+      ...super.diffFields(),
+      Format: this.format?.name,
+      "Lower Is Better": Boolean(this.lower_is_better),
+      ...Object.fromEntries(
+        Leaderboard.COMPONENT_TAGS.map((tag) => [tag, this.components[tag]?.mem]),
+      ),
+    };
+  }
+
   static fromJSON(json) {
     const lb = new Leaderboard();
     lb.id = json.ID;
@@ -416,6 +458,48 @@ export class AchievementSet {
   leaderboards = new Map();
 
   constructor() {}
+
+  // a local edit replaces the published asset with the same id, whichever file loads first
+  #resolve(asset, existing) {
+    if (!existing || existing.state === asset.state) {
+      return asset;
+    }
+    if (asset.state === AssetState.LOCAL) {
+      asset.published = existing;
+      return asset;
+    }
+    if (existing.state === AssetState.LOCAL) {
+      existing.published = asset;
+      return existing;
+    }
+    return asset;
+  }
+
+  #placeAchievement(asset) {
+    const key = asset.id || asset.index;
+    const winner = this.#resolve(
+      asset,
+      this.achievements.get(key) ?? this.archivedAchievements.get(key),
+    );
+    this.achievements.delete(key);
+    this.archivedAchievements.delete(key);
+
+    if (winner.isArchived()) {
+      this.archivedAchievements.set(key, winner);
+    } else if (winner.needsFeedback()) {
+      this.achievements.set(key, winner);
+    }
+  }
+
+  #placeLeaderboard(asset) {
+    const key = asset.id || asset.index;
+    const winner = this.#resolve(asset, this.leaderboards.get(key));
+    this.leaderboards.delete(key);
+    if (winner.needsFeedback()) {
+      this.leaderboards.set(key, winner);
+    }
+  }
+
   addJSON(json) {
     this.id = json.ID;
     this.title = json.Title;
@@ -445,21 +529,16 @@ export class AchievementSet {
         continue;
       }
       asset.index = i; // to preserve order from json file
-
-      if (asset.isArchived()) {
-        this.archivedAchievements.set(asset.id || asset.index, asset);
-      } else if (asset.needsFeedback()) {
-        this.achievements.set(asset.id || asset.index, asset);
-      }
+      this.#placeAchievement(asset);
     }
 
     for (const [i, x] of ldbJson.entries()) {
       const asset = Leaderboard.fromJSON(x);
-      if (x.Hidden || !asset || !asset.needsFeedback()) {
+      if (x.Hidden || !asset) {
         continue;
       }
       asset.index = i; // to preserve order from json file
-      this.leaderboards.set(asset.id || asset.index, asset);
+      this.#placeLeaderboard(asset);
     }
 
     return this;
@@ -479,24 +558,19 @@ export class AchievementSet {
           break;
         case "L": // leaderboard
           asset = Leaderboard.fromLocal(row);
-          asset.index = i + 1_000_000; // preserve order from file
-          if (!asset || !asset.needsFeedback()) {
-            continue;
-          }
-          this.leaderboards.set(asset.id || asset.index, asset);
-          break;
-        default: // achievement
-          asset = Achievement.fromLocal(row);
-          asset.index = i + 1_000_000; // preserve order from file
           if (!asset) {
             continue;
           }
-
-          if (asset.isArchived()) {
-            this.archivedAchievements.set(asset.id || asset.index, asset);
-          } else if (asset.needsFeedback()) {
-            this.achievements.set(asset.id || asset.index, asset);
+          asset.index = i + 1_000_000; // preserve order from file
+          this.#placeLeaderboard(asset);
+          break;
+        default: // achievement
+          asset = Achievement.fromLocal(row);
+          if (!asset) {
+            continue;
           }
+          asset.index = i + 1_000_000; // preserve order from file
+          this.#placeAchievement(asset);
           break;
       }
     }
@@ -511,6 +585,13 @@ export class AchievementSet {
   }
   getLeaderboards() {
     return [...this.leaderboards.values()];
+  }
+  getModifiedAssets() {
+    return [
+      ...this.getAchievements(),
+      ...this.getArchivedAchievements(),
+      ...this.getLeaderboards(),
+    ].filter((asset) => asset.changes().length > 0);
   }
 }
 

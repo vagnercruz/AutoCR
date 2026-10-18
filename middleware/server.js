@@ -29,19 +29,65 @@ async function doRequest(query) {
   return body;
 }
 
+// RA tokens stay valid for a long time, so reuse one instead of logging in on every request.
+// Warm serverless instances keep module state, so this also helps on Vercel.
+const TOKEN_TTL_MS = 30 * 60 * 1000;
+let cachedToken = null; // { promise, expires }
+
 async function login() {
   const data = await doRequest({ r: "login2", u: username, p: password });
+  if (!data.Token) {
+    throw new Error(`Login failed: ${data.Error ?? "no token returned"}`);
+  }
   return data.Token;
 }
 
-app.get("/game/:id", async (req, res) => {
-  try {
-    const token = await login();
-    const gameid = Number.parseInt(req.params.id, 10);
-    console.log(`[request] game ${gameid}`);
+function getToken() {
+  if (!cachedToken || cachedToken.expires < Date.now()) {
+    const promise = login();
+    cachedToken = { promise, expires: Date.now() + TOKEN_TTL_MS };
+    // don't keep a failed login around
+    promise.catch(() => {
+      if (cachedToken?.promise === promise) {
+        cachedToken = null;
+      }
+    });
+  }
+  return cachedToken.promise;
+}
 
-    const data = await doRequest({ r: "achievementsets", u: username, t: token, g: gameid });
-    res.send(data);
+// Runs an authenticated request, logging in again once if the cached token was rejected.
+async function withToken(fn) {
+  const data = await fn(await getToken());
+  if (data?.Success !== false) {
+    return data;
+  }
+  cachedToken = null;
+  return fn(await getToken());
+}
+
+function parseGameId(req, res) {
+  const gameid = Number.parseInt(req.params.id, 10);
+  if (!Number.isInteger(gameid) || gameid <= 0) {
+    res.status(400).send("Invalid game id");
+    return null;
+  }
+  return gameid;
+}
+
+const getAchievementSets = (gameid) =>
+  withToken((t) => doRequest({ r: "achievementsets", u: username, t, g: gameid }));
+const getCodeNotes = async (gameid) =>
+  (await withToken((t) => doRequest({ r: "codenotes2", t, g: gameid }))).CodeNotes;
+
+app.get("/game/:id", async (req, res) => {
+  const gameid = parseGameId(req, res);
+  if (gameid === null) {
+    return;
+  }
+  try {
+    console.log(`[request] game ${gameid}`);
+    res.send(await getAchievementSets(gameid));
   } catch (error) {
     console.error(error);
     res.status(500).send("Error fetching achievements");
@@ -49,13 +95,13 @@ app.get("/game/:id", async (req, res) => {
 });
 
 app.get("/notes/:id", async (req, res) => {
+  const gameid = parseGameId(req, res);
+  if (gameid === null) {
+    return;
+  }
   try {
-    const token = await login();
-    const gameid = Number.parseInt(req.params.id, 10);
     console.log(`[request] notes ${gameid}`);
-
-    const data = await doRequest({ r: "codenotes2", t: token, g: gameid });
-    res.send(data.CodeNotes);
+    res.send(await getCodeNotes(gameid));
   } catch (error) {
     console.error(error);
     res.status(500).send("Error fetching code notes");
@@ -63,15 +109,14 @@ app.get("/notes/:id", async (req, res) => {
 });
 
 app.get("/pack/:id", async (req, res) => {
+  const gameid = parseGameId(req, res);
+  if (gameid === null) {
+    return;
+  }
   try {
-    const token = await login();
-    const gameid = Number.parseInt(req.params.id, 10);
     console.log(`[request] pack ${gameid}`);
-
-    const pack = {};
-    pack.game = await doRequest({ r: "achievementsets", u: username, t: token, g: gameid });
-    pack.notes = (await doRequest({ r: "codenotes2", t: token, g: gameid })).CodeNotes;
-    res.send(pack);
+    const [game, notes] = await Promise.all([getAchievementSets(gameid), getCodeNotes(gameid)]);
+    res.send({ game, notes });
   } catch (error) {
     console.error(error);
     res.status(500).send("Error fetching data pack");
