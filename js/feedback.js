@@ -348,6 +348,14 @@ export const Feedback = Object.freeze({
     desc: "A Lookup must have at least one entry or a non-empty default value.",
     ref: ["https://docs.retroachievements.org/developer-docs/rich-presence.html#lookups"],
   },
+  RP_LOOKUP_NOTE_MISMATCH: {
+    type: "rp",
+    severity: FeedbackSeverity.WARN,
+    desc: "A Lookup and the code note of the address it reads list different values.",
+    ref: [
+      "https://docs.retroachievements.org/guidelines/content/code-notes.html#adding-values-and-labels",
+    ],
+  },
   RP_MACRO_UNUSED: {
     type: "rp",
     severity: FeedbackSeverity.INFO,
@@ -483,9 +491,27 @@ export const Feedback = Object.freeze({
     desc: "Comparison between pointer and non-zero value is usually incorrect, unless pointing to data in ROM.",
     ref: [],
   },
-  MISSING_ENUMERATION: {
+  LB_CANCEL_ALWAYS_TRUE: {
     type: "logic",
     severity: FeedbackSeverity.FAIL,
+    desc: "The leaderboard's Cancel condition is always true, so it can never be submitted.",
+    ref: ["https://docs.retroachievements.org/developer-docs/leaderboards.html"],
+  },
+  LB_CANCEL_EQUALS_START: {
+    type: "logic",
+    severity: FeedbackSeverity.FAIL,
+    desc: "The leaderboard's Cancel condition is identical to its Start condition, so it cancels as soon as it starts.",
+    ref: ["https://docs.retroachievements.org/developer-docs/leaderboards.html"],
+  },
+  LB_NO_CANCEL: {
+    type: "logic",
+    severity: FeedbackSeverity.INFO,
+    desc: "The leaderboard has no Cancel condition. Consider cancelling when the attempt can no longer succeed (e.g. leaving the level, game over).",
+    ref: ["https://docs.retroachievements.org/developer-docs/leaderboards.html"],
+  },
+  MISSING_ENUMERATION: {
+    type: "logic",
+    severity: FeedbackSeverity.WARN,
     desc: "A value was used that doesn't match any of the enumerated values in the code note.",
     ref: [
       "https://docs.retroachievements.org/guidelines/content/code-notes.html#adding-values-and-labels",
@@ -1760,41 +1786,102 @@ function* check_uuo_addhits(logic) {
   }
 }
 
-// oxlint-disable-next-line no-unused-vars
+// Every value an enumeration could mean: unprefixed literals like "10" or "0A" are ambiguous,
+// so accept both their decimal and hex readings.
+function enum_values(note) {
+  const values = new Set();
+  for (const { literal, value } of note.enum) {
+    values.add(value);
+    if (/^[0-9a-f]+$/i.test(literal)) {
+      values.add(Number.parseInt(literal, 16));
+      if (/^\d+$/.test(literal)) {
+        values.add(Number.parseInt(literal, 10));
+      }
+    }
+  }
+  return values;
+}
+
+const VALUE_MODIFIERS = new Set([ReqFlag.ADDADDRESS, ReqFlag.ADDSOURCE, ReqFlag.SUBSOURCE]);
+
 function* check_missing_enum(logic) {
   for (const g of logic.groups) {
     for (const [ri, req] of g.entries()) {
-      if (ri > 0 && g[ri - 1].flag === ReqFlag.ADDADDRESS) {
+      // only direct reads compare against the noted values; skip pointer reads and modified sources
+      if (ri > 0 && VALUE_MODIFIERS.has(g[ri - 1].flag)) {
         continue;
       }
-      const creq = req.canonicalize();
-
-      if (creq.lhs.type.addr && creq.rhs && creq.rhs.type === ReqType.VALUE) {
-        for (const note of current.notes) {
-          if (note.contains(creq.lhs.value) && note.enum) {
-            let found = false;
-            enumloop: for (const e of note.enum) {
-              if (e.value === creq.rhs.value) {
-                found = true;
-                break enumloop;
-              }
-            }
-
-            if (!found) {
-              yield new Issue(
-                Feedback.MISSING_ENUMERATION,
-                req,
-                <ul>
-                  <li>
-                    Enumeration <code>0x{creq.rhs.value.toString(16).padStart(2, "0")}</code> not
-                    found for note at address <code>{toDisplayHex(creq.lhs.value)}</code>
-                  </li>
-                </ul>,
-              );
-            }
-          }
-        }
+      if (VALUE_MODIFIERS.has(req.flag) || !["=", "!="].includes(req.op)) {
+        continue;
       }
+
+      const creq = req.canonicalize();
+      // 0 is usually the undocumented "none" state (e.g. a Delta 0 -> value transition)
+      if (
+        ![ReqType.MEM, ReqType.DELTA, ReqType.PRIOR].includes(creq.lhs.type) ||
+        creq.rhs?.type !== ReqType.VALUE ||
+        creq.rhs.value === 0
+      ) {
+        continue;
+      }
+
+      // match the note exactly (not an array containing the address) and its declared size
+      const note = current.notes?.find((n) => n.addr === creq.lhs.value);
+      if (!note?.enum || note.type !== creq.lhs.size || enum_values(note).has(creq.rhs.value)) {
+        continue;
+      }
+
+      yield new Issue(
+        Feedback.MISSING_ENUMERATION,
+        req,
+        <ul>
+          <li>
+            Value <code>0x{creq.rhs.value.toString(16).padStart(2, "0")}</code> ({creq.rhs.value})
+            is not listed in the note at <code>{toDisplayHex(note.addr)}</code>
+          </li>
+        </ul>,
+      );
+    }
+  }
+}
+
+const is_alt_logic = (logic) => !logic.value && logic.groups.length >= 3;
+
+// standalone conditions only: chains, flags and hitcounts behave differently once moved to Core
+const standalone_conditions = (g) =>
+  g
+    .filter((req, ri) => !req.flag && req.hits === 0 && !(ri > 0 && g[ri - 1].flag?.chain))
+    .map((req) => [req.toMarkdown(), req]);
+
+function* check_common_alt(logic) {
+  if (!is_alt_logic(logic)) {
+    return;
+  }
+
+  const [first, ...rest] = logic.groups.slice(1).map((g) => new Map(standalone_conditions(g)));
+  for (const [key, req] of first) {
+    if (rest.every((alt) => alt.has(key))) {
+      yield new Issue(
+        Feedback.COMMON_ALT,
+        req,
+        <ul>
+          <li>
+            Found in every Alt group: <code>{key.trim()}</code>
+          </li>
+        </ul>,
+      );
+    }
+  }
+}
+
+function* check_useless_alt(logic) {
+  if (!is_alt_logic(logic)) {
+    return;
+  }
+  for (const g of logic.groups.slice(1)) {
+    const conditions = g.filter((req) => req.isTerminating());
+    if (conditions.length > 0 && conditions.every((req) => req.flag === ReqFlag.RESETIF)) {
+      yield new Issue(Feedback.USELESS_ALT, conditions[0]);
     }
   }
 }
@@ -1857,6 +1944,37 @@ const FOREIGN_RE =
   /([\p{Script=Arabic}\p{Script=Armenian}\p{Script=Bengali}\p{Script=Bopomofo}\p{Script=Braille}\p{Script=Buhid}\p{Script=Canadian_Aboriginal}\p{Script=Cherokee}\p{Script=Cyrillic}\p{Script=Devanagari}\p{Script=Ethiopic}\p{Script=Georgian}\p{Script=Greek}\p{Script=Gujarati}\p{Script=Gurmukhi}\p{Script=Han}\p{Script=Hangul}\p{Script=Hanunoo}\p{Script=Hebrew}\p{Script=Hiragana}\p{Script=Inherited}\p{Script=Kannada}\p{Script=Katakana}\p{Script=Khmer}\p{Script=Lao}\p{Script=Limbu}\p{Script=Malayalam}\p{Script=Mongolian}\p{Script=Myanmar}\p{Script=Ogham}\p{Script=Oriya}\p{Script=Runic}\p{Script=Sinhala}\p{Script=Syriac}\p{Script=Tagalog}\p{Script=Tagbanwa}\p{Script=Tamil}\p{Script=Telugu}\p{Script=Thaana}\p{Script=Thai}\p{Script=Tibetan}\p{Script=Yi}]+)/gu;
 // oxlint-disable-next-line no-control-regex
 const NON_ASCII_RE = /([^\u0000-\u007F\u00A5\u00A3\p{L}]+)/gu;
+
+// "200.000 points" (period grouping) or "5,32 seconds" (comma decimals)
+const BAD_NUMBER_RES = [
+  /(?<![\w.,])\d{1,3}(?:\.\d{3})+(?![\d.,])/g,
+  /(?<![\w.,])\d+,(?:\d{1,2}|\d{4,})(?![\d.,])/g,
+];
+
+function* check_number_format(asset) {
+  for (const field of ["title", "desc"]) {
+    const found = BAD_NUMBER_RES.flatMap((re) => [...(asset[field] ?? "").matchAll(re)]).map(
+      (m) => m[0],
+    );
+    if (found.length > 0) {
+      yield new Issue(
+        Feedback.NUM_FORMAT,
+        field,
+        <ul>
+          <li>
+            Found in the {field === "desc" ? "description" : "title"}:{" "}
+            {found.map((x, i) => (
+              <Fragment key={i}>
+                {i > 0 && ", "}
+                <code>{x}</code>
+              </Fragment>
+            ))}
+          </li>
+        </ul>,
+      );
+    }
+  }
+}
 
 function* check_writing_mistakes(asset) {
   for (const elt of ["title", "desc"]) {
@@ -2264,6 +2382,68 @@ function* validate_macro_logic(part, ds) {
   }
 }
 
+const enum_readings = (e) =>
+  /^[0-9a-f]+$/i.test(e.literal) ? [e.value, Number.parseInt(e.literal, 16)] : [e.value];
+const to_hex_byte = (v) => "0x" + v.toString(16).padStart(2, "0");
+
+// Cross-checks each Lookup against the enumerated values of the code note for the address it reads
+function* check_rp_lookup_notes(rp) {
+  const reported = new Set();
+  for (const d of rp.display ?? []) {
+    for (const { name, calc } of d.lookups) {
+      const ranges = rp.lookups.get(name);
+      // only a plain read of one address maps 1:1 to the note's values
+      const req =
+        calc?.groups.length === 1 && calc.groups[0].length === 1 ? calc.groups[0][0] : null;
+      if (!ranges || !req || req.op || ![ReqType.MEM, ReqType.DELTA].includes(req.lhs.type)) {
+        continue;
+      }
+      const note = current.notes?.find((n) => n.addr === req.lhs.value);
+      const key = `${name}@${req.lhs.value}`;
+      if (!note?.enum || note.type !== req.lhs.size || reported.has(key)) {
+        continue;
+      }
+      reported.add(key);
+
+      const keyed = ranges.filter((r) => r.start !== null);
+      const hasDefault = keyed.length < ranges.length;
+      const inLookup = (v) => keyed.some((r) => v >= r.start && v <= (r.end ?? r.start));
+
+      // values the note documents but the lookup would show as the default (or nothing)
+      const missing = hasDefault ? [] : note.enum.filter((e) => !enum_readings(e).some(inLookup));
+      const noted = enum_values(note);
+      const undocumented = keyed
+        .filter((r) => r.end === null || r.end === r.start)
+        .filter((r) => !noted.has(r.start));
+
+      if (missing.length === 0 && undocumented.length === 0) {
+        continue;
+      }
+      yield new Issue(
+        Feedback.RP_LOOKUP_NOTE_MISMATCH,
+        rp.scriptLookups.find((l) => l.name === name),
+        <ul>
+          <li>
+            Lookup <code>{name}</code> reads <code>{toDisplayHex(note.addr)}</code>
+          </li>
+          {missing.length > 0 && (
+            <li>
+              In the note but not the lookup:{" "}
+              {missing.map((e) => `${e.literal} (${e.meaning})`).join(", ")}
+            </li>
+          )}
+          {undocumented.length > 0 && (
+            <li>
+              In the lookup but not the note:{" "}
+              {undocumented.map((r) => `${to_hex_byte(r.start)} (${r.value})`).join(", ")}
+            </li>
+          )}
+        </ul>,
+      );
+    }
+  }
+}
+
 function* check_rp_lookups(rp) {
   const builtInMacros = new Set([
     "Number",
@@ -2659,7 +2839,6 @@ function* check_rp_notes(rp) {
   }
 }
 
-// oxlint-disable-next-line no-unused-vars
 function* check_source_mod_measured(logic) {
   if (!logic.value) {
     return;
@@ -2800,12 +2979,19 @@ const BASIC_LOGIC_TESTS = [
   check_reset_with_hits,
   check_uuo_resetnextif,
   check_uuo_addhits,
-  //	check_missing_enum,
+  check_missing_enum,
+  check_common_alt,
+  check_useless_alt,
 ];
 
 const LOGIC_TESTS = [].concat([check_deltas, check_oca], BASIC_LOGIC_TESTS);
 
-const PRESENTATION_TESTS = [check_title_case, check_writing_mistakes, check_brackets];
+const PRESENTATION_TESTS = [
+  check_title_case,
+  check_writing_mistakes,
+  check_number_format,
+  check_brackets,
+];
 
 const CODE_NOTE_TESTS = [check_notes_bad_regions, check_notes_enum_size_mismatch];
 
@@ -2814,6 +3000,7 @@ const RICH_PRESENCE_TESTS = [
   check_rp_default,
   check_rp_notes,
   check_rp_lookups,
+  check_rp_lookup_notes,
   check_rp_display_strings,
 ];
 
@@ -2823,11 +3010,31 @@ const LEADERBOARD_TESTS = {
   STA: LOGIC_TESTS,
   CAN: BASIC_LOGIC_TESTS,
   SUB: BASIC_LOGIC_TESTS,
-  VAL: BASIC_LOGIC_TESTS,
+  VAL: [...BASIC_LOGIC_TESTS, check_source_mod_measured],
 };
+
+const is_constant = (logic, test) =>
+  logic?.groups.length === 1 && logic.groups[0].length === 1 && test(logic.groups[0][0]);
+
+function* check_leaderboard_structure(lb) {
+  const { STA, CAN, SUB } = lb.components;
+  if (is_constant(CAN, (req) => !req.flag && req.isAlwaysTrue())) {
+    yield new Issue(Feedback.LB_CANCEL_ALWAYS_TRUE, CAN.groups[0][0]);
+  } else if (CAN?.mem && CAN.mem === STA?.mem) {
+    yield new Issue(Feedback.LB_CANCEL_EQUALS_START, CAN.groups[0]?.[0] ?? null);
+  } else if (
+    is_constant(CAN, (req) => req.isAlwaysFalse()) &&
+    !is_constant(SUB, (req) => !req.flag && req.isAlwaysTrue()) // instant-submit boards don't need one
+  ) {
+    yield new Issue(Feedback.LB_NO_CANCEL, CAN.groups[0][0]);
+  }
+}
 
 function get_leaderboard_issues(lb) {
   const res = new IssueGroup("Logic & Design");
+  for (const issue of check_leaderboard_structure(lb)) {
+    res.add(issue);
+  }
   for (const block of ["START", "CANCEL", "SUBMIT", "VALUE"]) {
     const tag = block.slice(0, 3);
     for (const test of LEADERBOARD_TESTS[tag]) {

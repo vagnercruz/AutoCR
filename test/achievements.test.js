@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 
-import { AchievementSet, AssetState, CodeNoteSet } from "../js/achievements.js";
+import { AchievementSet, AssetState, CodeNote, CodeNoteSet } from "../js/achievements.js";
 
 const published = {
   ID: 1,
@@ -89,4 +89,20 @@ test("an achievement voided locally moves to the archived list", () => {
   const set = new AchievementSet().addJSON(published).addLocal(voided, new CodeNoteSet());
   expect(set.achievements.has(100)).toBe(false);
   expect(changedFields(set.archivedAchievements.get(100))).toEqual(["Title", "Points", "Logic"]);
+});
+
+describe("CodeNote enumerations", () => {
+  test.each([
+    ["LF", "[8-bit] Character\n0x00 = Mario\n0x01 = Luigi"],
+    ["CRLF", "[8-bit] Character\r\n0x00 = Mario\r\n0x01 = Luigi"],
+    ["dash bullets", "Character [8bit]\r\n--- 00 | Mario\r\n--- 01 | Luigi"],
+  ])("parses %s notes", (_, text) => {
+    expect(CodeNote.parseEnumerations(text)?.map((e) => e.meaning)).toEqual(["Mario", "Luigi"]);
+  });
+
+  test("keeps negative values negative", () => {
+    expect(CodeNote.parseEnumerations("[8-bit] Delta\n-1 = Left\n1 = Right").map((e) => e.value)).toEqual([
+      -1, 1,
+    ]);
+  });
 });

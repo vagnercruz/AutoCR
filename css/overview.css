@@ -1611,3 +1611,47 @@ body.autocr-sidebar-fully-hidden #autocr-restore-btn {
 #restore-session {
   margin: 10px 0;
 }
+
+.review-box {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  margin: 10px 0;
+  padding: 8px 12px;
+  border-left: 3px solid #888;
+  background: rgba(128, 128, 128, 0.08);
+}
+
+.review-box.reviewed {
+  border-left-color: #3fb950;
+  background: rgba(63, 185, 80, 0.08);
+}
+
+.review-box label {
+  white-space: nowrap;
+  font-weight: bold;
+  padding-top: 4px;
+}
+
+.review-box textarea {
+  flex: 1;
+  min-width: 0;
+  resize: vertical;
+  font-family: inherit;
+}
+
+.review-progress {
+  font-weight: normal;
+  opacity: 0.75;
+}
+
+.asset-filter td {
+  display: flex;
+  gap: 4px;
+  padding: 6px 4px;
+}
+
+.asset-filter input {
+  flex: 1;
+  min-width: 0;
+}

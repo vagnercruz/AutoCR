@@ -27,7 +27,9 @@ import { Logic, ReqFlag, ConditionFormatter, ReqType, MemSize } from "./logic";
 import { LogicExplainer } from "./explainer";
 import { Auditor } from "./auditor";
 import { current, get_game_title } from "./state";
-import { clearSession, loadSession, saveSession } from "./storage";
+import { clearSession, loadReviews, loadSession, saveReviews, saveSession } from "./storage";
+import { buildUserFile } from "./userfile";
+import { buildSetReport } from "./report";
 
 const sidebar = createRoot(document.getElementById("list-body"));
 const container = createRoot(document.getElementById("info-container"));
@@ -64,6 +66,9 @@ function reset_loaded() {
   current.notes = new CodeNoteSet();
   current.rp = null;
   current.files = []; // raw files loaded from disk, kept so the session survives a reload
+  current.reviews = {};
+  current.reviewsFor = null;
+  current.reviewsVersion = 0; // bumped when reviews load, so open review boxes pick them up
   clearSelected();
 }
 
@@ -211,6 +216,24 @@ async function copy_to_clipboard(text) {
     console.error(error.message);
     return false;
   }
+}
+
+function download_text(filename, text) {
+  const url = URL.createObjectURL(new Blob([text], { type: "text/plain;charset=utf-8" }));
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+// Writes notes into [gameid]-User.txt, merged with the loaded one so local assets aren't lost
+function download_user_file(notes) {
+  const existing = current.files?.find((f) => f.name.endsWith("-User.txt"))?.text ?? null;
+  download_text(
+    `${current.id}-User.txt`,
+    buildUserFile({ existing, title: get_game_title(), notes }),
+  );
 }
 
 function jump_to_asset(asset) {
@@ -1112,6 +1135,72 @@ function CollapsibleExplainer({ title = "Logic Analysis", children }) {
   );
 }
 
+// Review progress is keyed by asset type and id, so it survives reloads and new local edits
+const review_key = (asset) => `${asset.components ? "lb" : "ach"}-${asset.id}`;
+const get_review = (asset) => current.reviews?.[review_key(asset)] ?? { done: false, comment: "" };
+
+function set_review(asset, patch, rerender = false) {
+  current.reviews = { ...current.reviews, [review_key(asset)]: { ...get_review(asset), ...patch } };
+  saveReviews(current.id, current.reviews);
+  if (rerender) {
+    sidebar.render(<SidebarTabs />);
+  }
+}
+
+function load_reviews() {
+  const gameid = current.id;
+  if (gameid === -1 || current.reviewsFor === gameid) {
+    return;
+  }
+  current.reviewsFor = gameid;
+  loadReviews(gameid).then((reviews) => {
+    if (current.id === gameid) {
+      current.reviews = reviews;
+      current.reviewsVersion += 1;
+      sidebar.render(<SidebarTabs />);
+    }
+  });
+}
+
+function ReviewBox({ asset }) {
+  const review = get_review(asset);
+  const [done, setDone] = useState(review.done);
+  const [comment, setComment] = useState(review.comment);
+
+  return (
+    <div className={`review-box ${done ? "reviewed" : ""}`}>
+      <label>
+        <input
+          checked={done}
+          onChange={(e) => {
+            setDone(e.currentTarget.checked);
+            set_review(asset, { done: e.currentTarget.checked }, true);
+          }}
+          type="checkbox"
+        />{" "}
+        Reviewed
+      </label>
+      <textarea
+        onBlur={() => set_review(asset, { comment })}
+        onChange={(e) => setComment(e.currentTarget.value)}
+        placeholder="Review notes (saved in this browser, included in the full review)"
+        rows={2}
+        value={comment}
+      />
+    </div>
+  );
+}
+
+function ReviewProgress({ assets }) {
+  const reviewed = assets.filter((a) => get_review(a).done).length;
+  return assets.length > 0 ? (
+    <span className="review-progress">
+      {" "}
+      ({reviewed}/{assets.length} reviewed)
+    </span>
+  ) : null;
+}
+
 function formatChangeValue(value) {
   if (value === undefined || value === null || value === "") {
     return <em>(none)</em>;
@@ -1222,6 +1311,7 @@ function AchievementInfo({ ach }) {
         </p>
       </div>
       <AssetChanges asset={ach} />
+      <ReviewBox asset={ach} key={`${review_key(ach)}-${current.reviewsVersion}`} />
 
       <CollapsibleExplainer title={`Logic Analysis for: ${ach.title}`}>
         <LogicExplanation asset={ach} groups={ach.logic.groups} showDecimal={!isHex} />
@@ -1348,6 +1438,7 @@ function LeaderboardInfo({ lb }) {
         </p>
       </div>
       <AssetChanges asset={lb} />
+      <ReviewBox asset={lb} key={`${review_key(lb)}-${current.reviewsVersion}`} />
 
       <CollapsibleExplainer title={`Logic Analysis for: ${lb.title}`}>
         <h3>Start Conditions</h3>
@@ -1420,7 +1511,57 @@ function ChartCanvas({ setup }) {
   return <canvas ref={graph} />;
 }
 
+const issuesOf = (feedback) => (feedback ? [].concat(...feedback.issues) : []);
+const byRank = (a, b) => a.state.rank - b.state.rank;
+
+// Gathers every finding in the loaded set, in sidebar order, for the full review report
+function collect_review_sections() {
+  const toItems = (feedback) =>
+    issuesOf(feedback).map((issue) => ({ severity: issue.severity, text: issue.type.desc }));
+
+  const sections = [{ heading: "🗺️ Set", items: toItems(current.set.feedback) }];
+  for (const ach of current.set.getAchievements().sort(byRank)) {
+    sections.push({
+      heading: `🏆 ${ach.title} (${ach.points})`,
+      items: toItems(ach.feedback),
+      comment: get_review(ach).comment,
+    });
+  }
+  for (const lb of current.set.getLeaderboards().sort(byRank)) {
+    sections.push({
+      heading: `📊 ${lb.title}`,
+      items: toItems(lb.feedback),
+      comment: get_review(lb).comment,
+    });
+  }
+  if (current.rp) {
+    sections.push({ heading: "🎮 Rich Presence", items: toItems(current.rp.feedback) });
+  }
+
+  // the Auditor results are listed per message below, so skip their summary rows
+  const noteItems = issuesOf(current.notes.feedback)
+    .filter((issue) => !issue.type.desc.startsWith("[AUTOCR]"))
+    .map((issue) => ({
+      severity: issue.severity,
+      text:
+        issue.target?.addr === undefined
+          ? issue.type.desc
+          : `\`${toDisplayHex(issue.target.addr)}\`: ${issue.type.desc}`,
+    }));
+  for (const { addr, issues } of current.notes.audit ?? []) {
+    for (const issue of issues) {
+      noteItems.push({
+        severity: issue.level === "ERROR" ? FeedbackSeverity.FAIL : FeedbackSeverity.WARN,
+        text: `\`${toDisplayHex(addr)}\`: ${issue.message}`,
+      });
+    }
+  }
+  sections.push({ heading: "📝 Code Notes", items: noteItems });
+  return sections;
+}
+
 function AchievementSetOverview() {
+  const [reviewStatus, setReviewStatus] = useState(null);
   const feedback = current.set.feedback;
   // oxlint-disable-next-line no-unused-vars
   const feedback_targets = new Set([].concat(...feedback.issues).map((x) => x.target));
@@ -1428,17 +1569,18 @@ function AchievementSetOverview() {
 
   function AverageFeedback() {
     const ravg = Math.round(stats.avg_points);
-    if (ravg < 5) {
-      return <strong>(low)</strong>;
-    }
+    // check the extremes first, or they are shadowed by the milder ranges
     if (ravg < 4) {
       return <strong>(very low)</strong>;
     }
-    if (ravg > 10) {
-      return <strong>(high)</strong>;
+    if (ravg < 5) {
+      return <strong>(low)</strong>;
     }
     if (ravg > 15) {
       return <strong>(very high)</strong>;
+    }
+    if (ravg > 10) {
+      return <strong>(high)</strong>;
     }
     return null;
   }
@@ -1549,6 +1691,21 @@ function AchievementSetOverview() {
       <div className="main-header">
         <div className="float-right">
           <ConsoleIcon />
+        </div>
+        <div className="float-right">
+          <button
+            onClick={async () => {
+              const ok = await copy_to_clipboard(
+                buildSetReport(get_game_title(), collect_review_sections()),
+              );
+              setReviewStatus(ok ? "✅ Copied!" : "❌ Copy failed");
+              setTimeout(() => setReviewStatus(null), 2000);
+            }}
+            title="Copy every finding in the set as Markdown"
+            type="button"
+          >
+            {reviewStatus ?? "Copy Full Review"}
+          </button>
         </div>
         <SetBadge />
         <h1 id="asset-title">{get_game_title()}</h1>
@@ -2420,21 +2577,21 @@ function CodeNotesOverview() {
 
       <button
         className="float-right"
-        onClick={() => {
-          let delnotes = `1.0.0.0\n${get_game_title()}\n`;
-          for (const note of displaynotes) {
-            delnotes += `N0:${toDisplayHex(note.addr)}:""\n`;
-          }
+        disabled={displayaudit.length === 0}
+        onClick={() =>
+          download_user_file(displayaudit.map(({ addr, fix }) => ({ addr, note: fix })))
+        }
+        style={{ marginRight: "10px" }}
+        title="Download a User.txt with every suggested correction, to import in RAIntegration"
+        type="button"
+      >
+        Apply Fixes ({displayaudit.length})
+      </button>
 
-          const e = document.createElement("a");
-          e.setAttribute("href", "data:text/plaincharset=utf-8," + encodeURIComponent(delnotes));
-          e.setAttribute("download", `${current.id}-User.txt`);
-
-          e.style.display = "none";
-          document.body.append(e);
-          e.click();
-          document.body.removeChild(e);
-        }}
+      <button
+        className="float-right"
+        onClick={() => download_user_file(displaynotes.map((n) => ({ addr: n.addr, note: "" })))}
+        title="Download a User.txt that deletes the listed notes"
         type="button"
       >
         Quick Delete
@@ -3669,7 +3826,7 @@ function RichPresenceTab() {
   );
 }
 
-function AchievementTabs() {
+function AchievementTabs({ matches = () => true }) {
   let achievements = current.set.getAchievements();
   let archived = current.set.getArchivedAchievements();
   const [showArchived, setShowArchived] = useState(false);
@@ -3686,13 +3843,18 @@ function AchievementTabs() {
 
   achievements = achievements.sort((a, b) => a.state.rank - b.state.rank);
   archived = archived.sort((a, b) => a.state.rank - b.state.rank);
+  const shownAchievements = achievements.filter(matches);
+  const shownArchived = archived.filter(matches);
 
   return (
     <>
       <tr className="asset-header">
-        <td>Achievements</td>
+        <td>
+          Achievements
+          <ReviewProgress assets={achievements} />
+        </td>
       </tr>
-      {achievements.map((ach) => {
+      {shownAchievements.map((ach) => {
         const warn = SEVERITY_TO_CLASS[ach.feedback.status()];
         return (
           <tr
@@ -3703,7 +3865,7 @@ function AchievementTabs() {
             onClick={(e) => show_overview(e, <AchievementInfo ach={ach} />)}
           >
             <td className="asset-name">
-              🏆 {ach.state.marker}
+              {get_review(ach).done ? "✅" : "🏆"} {ach.state.marker}
               {ach.title} ({ach.points})
             </td>
           </tr>
@@ -3711,7 +3873,7 @@ function AchievementTabs() {
       })}
 
       {/* Bloco da Sanfona para Conquistas Arquivadas */}
-      {archived.length > 0 && (
+      {shownArchived.length > 0 && (
         <>
           <tr
             className="asset-header"
@@ -3719,12 +3881,12 @@ function AchievementTabs() {
             style={{ cursor: "pointer", userSelect: "none" }}
           >
             <td>
-              {showArchived ? "▼" : "▶"} Archived ({archived.length})
+              {showArchived ? "▼" : "▶"} Archived ({shownArchived.length})
             </td>
           </tr>
 
           {showArchived &&
-            archived.map((ach) => {
+            shownArchived.map((ach) => {
               const warn = SEVERITY_TO_CLASS[ach.feedback.status()];
               // Adiciona a classe 'fade' para escurecer as conquistas arquivadas
               return (
@@ -3736,7 +3898,7 @@ function AchievementTabs() {
                   onClick={(e) => show_overview(e, <AchievementInfo ach={ach} />)}
                 >
                   <td className="asset-name">
-                    🏆 {ach.state.marker}
+                    {get_review(ach).done ? "✅" : "🏆"} {ach.state.marker}
                     {ach.title} ({ach.points})
                   </td>
                 </tr>
@@ -3748,19 +3910,23 @@ function AchievementTabs() {
   );
 }
 
-function LeaderboardTabs() {
+function LeaderboardTabs({ matches = () => true }) {
   let leaderboards = current.set.getLeaderboards();
   if (leaderboards.length === 0) {
     return null;
   }
 
   leaderboards = leaderboards.sort((a, b) => a.state.rank - b.state.rank);
+  const shownLeaderboards = leaderboards.filter(matches);
   return (
     <>
       <tr className="asset-header">
-        <td>Leaderboards</td>
+        <td>
+          Leaderboards
+          <ReviewProgress assets={leaderboards} />
+        </td>
       </tr>
-      {leaderboards.map((lb) => {
+      {shownLeaderboards.map((lb) => {
         const warn = SEVERITY_TO_CLASS[lb.feedback.status()];
         return (
           <tr
@@ -3771,12 +3937,70 @@ function LeaderboardTabs() {
             onClick={(e) => show_overview(e, <LeaderboardInfo lb={lb} />)}
           >
             <td className="asset-name">
-              📊 {lb.state.marker}
+              {get_review(lb).done ? "✅" : "📊"} {lb.state.marker}
               {lb.title}
             </td>
           </tr>
         );
       })}
+    </>
+  );
+}
+
+const ASSET_FILTERS = {
+  all: { label: "All assets", test: () => true },
+  issues: {
+    label: "With warnings",
+    test: (a) => a.feedback?.status() >= FeedbackSeverity.WARN,
+  },
+  errors: {
+    label: "With errors",
+    test: (a) => a.feedback?.status() >= FeedbackSeverity.FAIL,
+  },
+  local: { label: "Local", test: (a) => a.state === AssetState.LOCAL },
+  modified: { label: "Changed locally", test: (a) => a.changes().length > 0 },
+  unreviewed: { label: "Not reviewed", test: (a) => !get_review(a).done },
+};
+
+// Keeps its own state so typing doesn't re-run SidebarTabs' route effect
+function FilteredAssetTabs() {
+  const [query, setQuery] = useState("");
+  const [kind, setKind] = useState("all");
+
+  const needle = query.trim().toLowerCase();
+  const matches = (asset) =>
+    ASSET_FILTERS[kind].test(asset) &&
+    (!needle || `${asset.title} ${asset.desc} ${asset.id}`.toLowerCase().includes(needle));
+
+  if (current.set.getAchievements().length + current.set.getLeaderboards().length === 0) {
+    return null;
+  }
+  return (
+    <>
+      <tr className="asset-filter">
+        <td>
+          <input
+            onChange={(e) => setQuery(e.currentTarget.value)}
+            onKeyDown={(e) => e.stopPropagation()} // keep arrow keys for the text box
+            placeholder="Search assets…"
+            type="search"
+            value={query}
+          />
+          <select
+            onChange={(e) => setKind(e.currentTarget.value)}
+            onKeyDown={(e) => e.stopPropagation()}
+            value={kind}
+          >
+            {Object.entries(ASSET_FILTERS).map(([key, { label }]) => (
+              <option key={key} value={key}>
+                {label}
+              </option>
+            ))}
+          </select>
+        </td>
+      </tr>
+      <AchievementTabs matches={matches} />
+      <LeaderboardTabs matches={matches} />
     </>
   );
 }
@@ -3791,8 +4015,7 @@ function SidebarTabs() {
       <CodeNotesTab />
       <RichPresenceTab />
       <CodeReviewTab />
-      <AchievementTabs />
-      <LeaderboardTabs />
+      <FilteredAssetTabs />
     </>
   );
 }
@@ -3900,6 +4123,7 @@ function update() {
 
   // re-render the sidebar with any newly-loaded assets
   sidebar.render(<SidebarTabs />);
+  load_reviews();
   document.title = "[AutoCR] " + (get_game_title() ?? "");
 }
 

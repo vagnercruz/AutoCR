@@ -1,8 +1,19 @@
 import { beforeAll, describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 
-import { AchievementSet, CodeNote, CodeNoteSet } from "../js/achievements.js";
-import { assess_achievement, assess_leaderboard, Feedback } from "../js/feedback.js";
+import {
+  AchievementSet,
+  CodeNote,
+  CodeNoteSet,
+  Leaderboard,
+  RichPresence,
+} from "../js/achievements.js";
+import {
+  assess_achievement,
+  assess_leaderboard,
+  assess_rich_presence,
+  Feedback,
+} from "../js/feedback.js";
 import { current } from "../js/state.js";
 
 // test/228-User.txt is a set of local achievements whose titles describe the issue they exercise
@@ -77,10 +88,77 @@ describe("does not flag the [PASS] fixtures", () => {
   });
 });
 
-// fixtures whose issue the checks do not detect yet
-test.todo("111000009 reports NUM_FORMAT (Wrong Number Format)");
-test.todo("111000016 reports COMMON_ALT (Shared Logic in Alt Groups)");
-test.todo("111000027 reports USELESS_ALT (Useless Alt)");
-test.todo("111000039 reports SOURCE_MOD_MEASURED (Source Modification on Measured)");
-test.todo("111000040 reports MISSING_ENUMERATION (Missing Enumerations)");
-test.todo("111000032 does not report USELESS_ANDNEXT (Pause Until)");
+describe("checks added on top of upstream", () => {
+  test.each([
+    [111_000_009, "NUM_FORMAT"],
+    [111_000_016, "COMMON_ALT"],
+    [111_000_027, "USELESS_ALT"],
+    [111_000_039, "SOURCE_MOD_MEASURED"],
+    [111_000_040, "MISSING_ENUMERATION"],
+  ])("%i reports %s", (id, key) => {
+    expect(issuesOf(assets.get(id)).has(Feedback[key])).toBe(true);
+  });
+
+  // the [PASS] in this fixture is about ResetNextIf; its leading AndNext really is useless
+  test("111000032 still reports its useless AndNext", () => {
+    expect(issuesOf(assets.get(111_000_032)).has(Feedback.USELESS_ANDNEXT)).toBe(true);
+  });
+});
+
+const assessRP = (script, noteText) => {
+  current.notes = new CodeNoteSet();
+  current.notes.add(new CodeNote("0x10", noteText, "dev"));
+  return [].concat(...assess_rich_presence(RichPresence.fromText(script)).issues).filter(
+    (i) => i.type === Feedback.RP_LOOKUP_NOTE_MISMATCH,
+  );
+};
+
+describe("rich presence lookups vs. code notes", () => {
+  const note = "[8-bit] Character\r\n0x00 = Mario\r\n0x01 = Luigi\r\n0x02 = Peach";
+
+  test("passes when both list the same values", () => {
+    const rp = "Lookup:Char\n0=Mario\n1=Luigi\n2=Peach\n\nDisplay:\nPlaying as @Char(0xH0010)";
+    expect(assessRP(rp, note)).toEqual([]);
+  });
+
+  test("reports values missing on either side", () => {
+    const rp = "Lookup:Char\n0=Mario\n1=Luigi\n3=Toad\n\nDisplay:\nPlaying as @Char(0xH0010)";
+    const [issue] = assessRP(rp, note);
+    expect(issue.target.name).toBe("Char");
+  });
+
+  test("a default entry covers undocumented-in-lookup values", () => {
+    const rp = "Lookup:Char\n0=Mario\n*=Someone\n\nDisplay:\nPlaying as @Char(0xH0010)";
+    expect(assessRP(rp, note)).toEqual([]);
+  });
+
+  test("ignores lookups over computed values", () => {
+    const rp = "Lookup:Char\n0=Mario\n3=Toad\n\nDisplay:\nPlaying as @Char(0xH0010*2)";
+    expect(assessRP(rp, note)).toEqual([]);
+  });
+});
+
+const LB_STRUCTURE = ["LB_CANCEL_ALWAYS_TRUE", "LB_CANCEL_EQUALS_START", "LB_NO_CANCEL"];
+const lbIssues = (mem) => {
+  const lb = Leaderboard.fromJSON({
+    ID: 1,
+    Title: "Fastest Run",
+    Description: "Finish quickly",
+    Format: "FRAMES",
+    LowerIsBetter: true,
+    Mem: mem,
+  });
+  return [...issuesOf(lb)].filter((t) => LB_STRUCTURE.some((k) => Feedback[k] === t));
+};
+
+describe("leaderboard structure", () => {
+  test.each([
+    ["STA:0xH0010=1_d0xH0010=0::CAN:0xH0011=1::SUB:0xH0012=1::VAL:0xH0013", []],
+    ["STA:0xH0010=1_d0xH0010=0::CAN:1=1::SUB:0xH0012=1::VAL:0xH0013", ["LB_CANCEL_ALWAYS_TRUE"]],
+    ["STA:0xH0010=1_d0xH0010=0::CAN:0xH0010=1_d0xH0010=0::SUB:0xH0012=1::VAL:0xH0013", ["LB_CANCEL_EQUALS_START"]],
+    ["STA:0xH0010=1_d0xH0010=0::CAN:0=1::SUB:0xH0012=1::VAL:0xH0013", ["LB_NO_CANCEL"]],
+    ["STA:0xH0010=1_d0xH0010=0::CAN:0=1::SUB:1=1::VAL:0xH0013", []],
+  ])("%s", (mem, expected) => {
+    expect(lbIssues(mem)).toEqual(expected.map((k) => Feedback[k]));
+  });
+});

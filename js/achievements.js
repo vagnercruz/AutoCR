@@ -829,7 +829,7 @@ export class CodeNote {
   }
 
   getHeader() {
-    return this.note.split("\n")[0];
+    return this.note.split(/\r?\n/)[0];
   }
   toRefString() {
     return `note-${this.addr}`;
@@ -1015,14 +1015,16 @@ export class CodeNote {
 
   static parseEnumerations(note) {
     // Regex explanation:
-    // Prefix: Allows whitespace, traditional tree chars, and Unicode box drawing (\u2500-\u257F)
+    // Prefix: Allows whitespace, traditional tree chars, Unicode box drawing (\u2500-\u257F),
+    //         and dash bullets like "--- 0A | Label" (only before whitespace, so "-1" stays negative)
     // Group 1: The value (Hex like 0x10, Float like 0.5, or Dec like 16)
     // Group 2: The delimiter (accepts =, :, |, or -)
     // Group 3: The label (everything after the delimiter)
     const ENUM_LINE_RE =
-      /^[.+\s\u2500-\u257F]*((?:(?:0x)?[0-9a-f]+|[-+]?[0-9]*\.?[0-9]+)+)\s*([:=|-])\s*(.+)$/i;
+      /^(?:[.+\s\u2500-\u257F]|-+(?=\s))*((?:(?:0x)?[0-9a-f]+|[-+]?[0-9]*\.?[0-9]+)+)\s*([:=|-])\s*(.+)$/i;
 
-    const lines = note.split("\n");
+    // notes from the server use CRLF, and "." won't match a stray "\r"
+    const lines = note.split(/\r?\n/);
     const enumerations = [];
     let isHex = false;
 
